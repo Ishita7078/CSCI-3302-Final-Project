@@ -6,6 +6,7 @@ from controller import Robot
 import math
 import numpy as np
 from iterative_closest_point import icp_matching
+from ekf_slam import ekf_slam
 
 #Initialization
 print("=== Initializing Grocery Shopper...")
