@@ -78,9 +78,9 @@ keyboard = robot.getKeyboard()
 keyboard.enable(timestep)
 
 # Odometry
-pose_x     = 0
+pose_x     = -4.999
 pose_y     = 0
-pose_theta = 0
+pose_theta = 0.02
 
 vL = 0
 vR = 0
@@ -88,11 +88,8 @@ vR = 0
 lidar_offsets = np.linspace(-LIDAR_ANGLE_RANGE/2., +LIDAR_ANGLE_RANGE/2., LIDAR_ANGLE_BINS)
 lidar_offsets = lidar_offsets[83:len(lidar_offsets)-83] #provides clearest image
 
-def get_pose(gps, compass): #webots provided pose, CHANGE
-    x_r = gps.getValues()[0]
-    y_r = gps.getValues()[1]
-    theta_r = np.arctan2(compass.getValues()[0], compass.getValues()[1])
-    return x_r, y_r, theta_r
+def calc_position():
+    return 0 # implement foward kinematics
 
 def rotate(ranges, angles): #rotate angles appropriately
     xs = ranges * np.cos(angles)
@@ -111,8 +108,6 @@ gripper_status="closed"
 
 # Main Loop
 while robot.step(timestep) != -1:
-        
-    pose_x, pose_y, pose_theta = get_pose(gps, compass) #webots pose, CHANGE
     lidar_values = np.array(lidar.getRangeImage())
     
     scan = lidar_values[83:-83]  #clearest image
@@ -129,7 +124,6 @@ while robot.step(timestep) != -1:
                 R, t = icp_matching(pc_last, curr)
                 dtheta = math.atan2(R[1, 0], R[0, 0])
                 dx, dy = t[0, 0], t[1, 0]
-    
                 pose_theta += dtheta
                 pose_x += dx * math.cos(pose_theta) - dy * math.sin(pose_theta)
                 pose_y += dx * math.sin(pose_theta) + dy * math.cos(pose_theta)
