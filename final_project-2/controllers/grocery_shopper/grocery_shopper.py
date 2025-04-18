@@ -117,23 +117,23 @@ def to_pixels(x, y):
 def to_world(bin, distance):
     global pose_x, pose_y, pose_theta  
     if distance != float('inf') and distance > 0 and distance < 5:
-        # print(distance)
+        print(distance)
         
         x_robot = distance * np.cos(lidar_offsets[bin])
         y_robot = distance * np.sin(lidar_offsets[bin])
 
         transform = np.array([ #homogenous transformation matrix
-            [np.cos(pose_theta), np.sin(pose_theta), pose_x],
-            [-np.sin(pose_theta), np.cos(pose_theta), pose_y],
+            [np.cos(pose_theta), -np.sin(pose_theta), pose_x],
+            [np.sin(pose_theta), np.cos(pose_theta), pose_y],
             [0, 0, 1]
         ])
         
-
+        # robot = np.array([pose_x, pose_y, 1])
         robot = np.array([x_robot, y_robot, 1])
+
         world = np.dot(transform, robot)
 
         return world[0], world[1] 
-        # return pose_x, pose_y
     return None
 
 
@@ -170,6 +170,8 @@ gripper_status="closed"
 
 # Main Loop
 while robot.step(timestep) != -1:
+    print("Lidar max range:", lidar.getMaxRange())
+
         
     pose_x, pose_y, pose_theta = get_pose(gps, compass) #webots pose, CHANGE
     # print(pose_x, pose_y, pose_theta)
@@ -220,8 +222,8 @@ while robot.step(timestep) != -1:
     robot_x, robot_y = to_pixels(pose_x, pose_y)
 
     for i in range(len(lidar_offsets)):
+        distance = lidar_values[i]
         world_coords = to_world(i, lidar_values[i])
-        print(i, lidar_values[i])
         if world_coords is not None: #if distance is infinity world coords will be none
             # print("HIHIHI")
             world_x, world_y = to_pixels(world_coords[0], world_coords[1])
@@ -231,7 +233,8 @@ while robot.step(timestep) != -1:
                 line_algo(robot_x, robot_y, world_x, world_y)
                 # print(f"[DEBUG] Marking map at ({world_x}, {world_y})")
                 # print(occupancy_grid[world_x][world_y])
-                occupancy_grid[world_x][world_y] = 3  
+                if distance < 1 and distance > 0.3:
+                    occupancy_grid[world_x][world_y] = 3  
 
 
     ##### Part 4: Draw the obstacle and free space pixels on the map
