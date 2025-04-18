@@ -6,6 +6,8 @@ from controller import Robot
 import math
 import numpy as np
 from iterative_closest_point import icp_matching
+import matplotlib.pyplot as plt
+
 
 #Initialization
 print("=== Initializing Grocery Shopper...")
@@ -21,7 +23,7 @@ LIDAR_SENSOR_MAX_RANGE = 5.5 # Meters
 LIDAR_ANGLE_RANGE = math.radians(240)
 print(LIDAR_ANGLE_BINS)
 lidar_offsets = np.linspace(-LIDAR_ANGLE_RANGE / 2., LIDAR_ANGLE_RANGE / 2., LIDAR_ANGLE_BINS)
-lidar_offsets = lidar_offsets[::-1]
+# lidar_offsets = lidar_offsets[::-1]
 
 # create the Robot instance.
 robot = Robot()
@@ -85,8 +87,16 @@ pose_theta = 0
 vL = 0
 vR = 0
 
+SCALE = 20
+
+map_size = (30, 16)  # meters
+resolution = 0.0033  # meters per cell
+grid_width = int(map_size[0] * SCALE)
+grid_height = int(map_size[1] * SCALE)
+occupancy_grid = np.zeros((grid_width, grid_height))
+# occupancy_grid = np.zeros((300, 300))
 lidar_offsets = np.linspace(-LIDAR_ANGLE_RANGE/2., +LIDAR_ANGLE_RANGE/2., LIDAR_ANGLE_BINS)
-lidar_offsets = lidar_offsets[83:len(lidar_offsets)-83] #provides clearest image
+# lidar_offsets = lidar_offsets[83:len(lidar_offsets)-83] #provides clearest image
 
 def get_pose(gps, compass): #webots provided pose, CHANGE
     x_r = gps.getValues()[0]
@@ -98,6 +108,55 @@ def rotate(ranges, angles): #rotate angles appropriately
     xs = ranges * np.cos(angles)
     ys = ranges * np.sin(angles)
     return np.vstack((xs, ys))
+
+
+def to_pixels(x, y):
+   return int((x + 15) * SCALE), int((y + 8.05) * SCALE)
+    
+  
+def to_world(bin, distance):
+    global pose_x, pose_y, pose_theta  
+    if distance != float('inf') and distance > 0 and distance < 5:
+        # print(distance)
+        
+        x_robot = distance * np.cos(lidar_offsets[bin])
+        y_robot = distance * np.sin(lidar_offsets[bin])
+
+        transform = np.array([ #homogenous transformation matrix
+            [np.cos(pose_theta), np.sin(pose_theta), pose_x],
+            [-np.sin(pose_theta), np.cos(pose_theta), pose_y],
+            [0, 0, 1]
+        ])
+        
+
+        robot = np.array([x_robot, y_robot, 1])
+        world = np.dot(transform, robot)
+
+        return world[0], world[1] 
+        # return pose_x, pose_y
+    return None
+
+
+def line_algo(x0, y0, x1, y1): #bresenham's line algorithm
+    # print(x0, y0, x1, y1)
+    dx = abs(x1 - x0)
+    dy = abs(y1 - y0)
+    x_inc = 1 if x0 < x1 else -1 #takes care of lines going either way
+    s_inc = 1 if y0 < y1 else -1
+    err = dx - dy
+
+    while True:
+        if occupancy_grid[x0][y0] != 2 and occupancy_grid[x0][y0] != 3: #make sure pixel is not an obstacle or on the robot path before filling it in with white
+            occupancy_grid[x0][y0] = 1 
+        if x0 == x1 and y0 == y1:
+            break
+        e2 = 2 * err
+        if e2 > -dy:
+            err -= dy
+            x0 += x_inc
+        if e2 < dx:
+            err += dx
+            y0 += s_inc
 
 # ------------------------------------------------------------------
 # Helper Functions
@@ -113,35 +172,102 @@ gripper_status="closed"
 while robot.step(timestep) != -1:
         
     pose_x, pose_y, pose_theta = get_pose(gps, compass) #webots pose, CHANGE
+    # print(pose_x, pose_y, pose_theta)
     lidar_values = np.array(lidar.getRangeImage())
-    
-    scan = lidar_values[83:-83]  #clearest image
 
-    valid = np.isfinite(scan) #filter invalid readings
-    filtered_ranges = scan[valid]
-    filtered_angles = lidar_offsets[valid]    
+    # display.setColor(0xFF0000)  # Green line
+
+    # Draw the line (x0, y0) to (x1, y1)
+    # display.drawPixel(400, 300)
     
-    if len(filtered_ranges) > 10:
-        curr = rotate(filtered_ranges, filtered_angles)
+    # scan = lidar_valxues[83:-83]  #clearest image
+
+    # valid = np.isfinite(lidar_values) & (lidar_values > 3) #filter invalid readings
+
+    # filtered_ranges = lidar_values[valid]
+    # filtered_angles = lidar_offsets[valid]   
+    # # print(lidar_values[0])
     
-        if 'pc_last' in locals(): #if previous scan, apply icp
-            try:
-                R, t = icp_matching(pc_last, curr)
-                dtheta = math.atan2(R[1, 0], R[0, 0])
-                dx, dy = t[0, 0], t[1, 0]
+    # if len(filtered_ranges) > 10:
+    #     curr = rotate(filtered_ranges, filtered_angles)
     
-                pose_theta += dtheta
-                pose_x += dx * math.cos(pose_theta) - dy * math.sin(pose_theta)
-                pose_y += dx * math.sin(pose_theta) + dy * math.cos(pose_theta)
+    #     if 'pc_last' in locals(): #if previous scan, apply icp
+    #         try:
+    #             R, t = icp_matching(pc_last, curr)
+    #             dtheta = math.atan2(R[1, 0], R[0, 0])
+    #             dx, dy = t[0, 0], t[1, 0]
     
-            except Exception as e: #to catch improperly formatted dimensions or non-convergence of SVD
-                print("[ICP Error]", e)
+    #             pose_theta += dtheta
+    #             pose_x += dx * math.cos(pose_theta) - dy * math.sin(pose_theta)
+    #             pose_y += dx * math.sin(pose_theta) + dy * math.cos(pose_theta)
     
-        pc_last = curr
+    #         except Exception as e: #to catch improperly formatted dimensions or non-convergence of SVD
+    #             print("[ICP Error]", e)
     
-    #update last scan and pose
-    last_scan = scan
-    last_pose = (pose_x, pose_y, pose_theta)
+    #     pc_last = curr
+    
+    # #update last scan and pose
+    # last_scan = lidar_values
+    # last_pose = (pose_x, pose_y, pose_theta)
+
+    pose_pixels = to_pixels(pose_x, pose_y)
+    # print(pose_pixels[0], pose_pixels[1])
+    # display.setColor(0xFF0000)
+    # display.drawPixel(pose_pixels[0], pose_pixels[1])
+    occupancy_grid[pose_pixels[0]][pose_pixels[1]] = 2
+    # print(occupancy_grid[pose_pixels[0]][pose_pixels[1]])
+
+    robot_x, robot_y = to_pixels(pose_x, pose_y)
+
+    for i in range(len(lidar_offsets)):
+        world_coords = to_world(i, lidar_values[i])
+        print(i, lidar_values[i])
+        if world_coords is not None: #if distance is infinity world coords will be none
+            # print("HIHIHI")
+            world_x, world_y = to_pixels(world_coords[0], world_coords[1])
+
+    
+            if 0 <= world_x < grid_width and 0 <= world_y < grid_height:
+                line_algo(robot_x, robot_y, world_x, world_y)
+                # print(f"[DEBUG] Marking map at ({world_x}, {world_y})")
+                # print(occupancy_grid[world_x][world_y])
+                occupancy_grid[world_x][world_y] = 3  
+
+
+    ##### Part 4: Draw the obstacle and free space pixels on the map
+    # for i, row in enumerate(occupancy_grid): #loop through 2x2 array representing the world and set display colors(sorry this makes it so slow)
+    #     for j, cell in enumerate(row):
+    #         if cell == 0: #black
+    #             display.setColor(0x000000)
+    #         elif cell == 1: #white
+    #             display.setColor(0xFFFFFF)
+    #         elif cell == 2: #red
+    #             print("AA")
+    #             display.setColor(0xFF0000)
+    #         elif cell == 3: #blue
+    #             display.setColor(0x0000FF)
+            
+    #         display.drawPixel(i, j)
+    color_grid = np.zeros((grid_width, grid_height, 3), dtype=np.uint8)
+    # print(color_grid)
+
+    color_grid[occupancy_grid == 1] = [255, 255, 255]  # Free space = White
+    color_grid[occupancy_grid == 2] = [255, 0, 0]      # Robot path = Red
+    color_grid[occupancy_grid == 3] = [0, 0, 255]      # Obstacles = Blue
+    # Unknown space remains black (0,0,0)
+    # print(color_grid[975][4499])
+    # print(color_grid[975-10:975+10, 4499-10:4499+10])
+    plt.clf()
+    plt.imshow(color_grid, origin="lower")
+    plt.title("Occupancy Grid Map (30x16m)")
+    plt.draw()  # Update the plot
+    plt.pause(0.01)  # Keep the plot updated  
+
+
+    # plt.clf()
+    # plt.imshow(occupancy_grid, cmap="gray", origin="lower")
+    # plt.title("Occupancy Grid Map (30x16m)")
+    # plt.pause(0.01)
     
     
     robot_parts["wheel_left_joint"].setVelocity(vL)
