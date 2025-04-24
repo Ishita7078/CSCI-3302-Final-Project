@@ -1,7 +1,7 @@
-"""
-Iterative Closest Point (ICP) SLAM example
-author: Atsushi Sakai (@Atsushi_twi), Göktuğ Karakaşlı, Shamil Gemuev
-"""
+# """
+# Iterative Closest Point (ICP) SLAM example
+# author: Atsushi Sakai (@Atsushi_twi), Göktuğ Karakaşlı, Shamil Gemuev
+# """
 
 import math
 
@@ -16,10 +16,11 @@ MAX_ITER = 100
 show_animation = True
 
 map_size = (30, 16)  # meters
-resolution = 0.1  # meters per cell
+resolution = 0.0166  # meters per cell
 grid_width = int(map_size[0] / resolution)
 grid_height = int(map_size[1] / resolution)
 occupancy_grid = np.zeros((grid_height, grid_width))
+print(occupancy_grid.shape[0], occupancy_grid.shape[1])
 
 
 def icp_matching(previous_points, current_points):
@@ -57,20 +58,20 @@ def icp_matching(previous_points, current_points):
         current_points = (Rt @ current_points) + Tt[:, np.newaxis]
 
         dError = preError - error
-        print("Residual:", error)
+        # print("Residual:", error)
 
         if dError < 0:  # prevent matrix H changing, exit loop
-            print("Not Converge...", preError, dError, count)
+            # print("Not Converge...", preError, dError, count)
             break
 
         preError = error
         H = update_homogeneous_matrix(H, Rt, Tt)
 
         if dError <= EPS:
-            print("Converge", error, dError, count)
+            # print("Converge", error, dError, count)
             break
         elif MAX_ITER <= count:
-            print("Not Converge...", error, dError, count)
+            # print("Not Converge...", error, dError, count)
             break
 
     R = np.array(H[0:-1, 0:-1])
@@ -125,16 +126,18 @@ def svd_motion_estimation(previous_points, current_points):
 
     return R, t
 
-def world_to_map_coords(x, y):
+def world_to_grid(x, y):
+    # Origin in the middle of the grid
+    print(f"x and y: {x} {y}")
     global map_size, resolution, grid_width, grid_height, occupancy_grid
-    mx = int((x + map_size[0] / 2) / resolution)
-    my = int((y + map_size[1] / 2) / resolution)
-    if 0 <= mx < grid_width and 0 <= my < grid_height:
-        return mx, my
-    else:
-        return None
+    # Convert to grid coordinates
+    grid_x = int((x+15) / resolution)
+    grid_y = int((y+8.05) / resolution)  # Flip Y to match image coordinate system
+    print(f"grid_x and grid_y: {grid_x} {grid_y}")
 
-# def plot_points(previous_points, current_points, figure=None):
+    return grid_x, grid_y
+
+# def plot_points(previous_points, current_points, figure=None): 
 #     global map_size, resolution, grid_width, grid_height, occupancy_grid
 #     # Update the occupancy grid with current_points
 #     for i in range(current_points.shape[1]):
@@ -150,29 +153,29 @@ def world_to_map_coords(x, y):
 #     plt.title("Occupancy Grid Map (30x16m)")
 #     plt.pause(0.01)
 
-def plot_points(previous_points, current_points, figure=None):
-    global map_size, resolution, grid_width, grid_height, occupancy_grid
+# def plot_points(previous_points, current_points, figure=None):
+#     global map_size, resolution, grid_width, grid_height, occupancy_grid
 
-    robot_map_pos = world_to_map_coords(0.0, 0.0)  # robot is at (0, 0)
-    if not robot_map_pos:
-        return
-    rx, ry = robot_map_pos
+#     robot_map_pos = world_to_grid(0.0, 0.0)  # robot is at (0, 0)
+#     if not robot_map_pos:
+#         return
+#     rx, ry = robot_map_pos
 
-    for i in range(current_points.shape[1]):
-        x, y = current_points[0, i], current_points[1, i]
-        coords = world_to_map_coords(x, y)
-        if coords:
-            mx, my = coords
-            # Trace the line to the obstacle
-            line_algo(rx, ry, mx, my)
-            # Mark endpoint as occupied (obstacle)
-            occupancy_grid[my][mx] = 1
+#     for i in range(current_points.shape[1]):
+#         x, y = current_points[0, i], current_points[1, i]
+#         coords = world_to_grid(x, y)
+#         if coords is not None:
+#             mx, my = coords
+#             # Trace the line to the obstacle
+#             line_algo(rx, ry, mx, my)
+#             # Mark endpoint as occupied (obstacle)
+#             occupancy_grid[my][mx] = 0.5
 
-    # Plot map
-    plt.clf()
-    plt.imshow(occupancy_grid, cmap="gray", origin="lower")
-    plt.title("Occupancy Grid Map (30x16m)")
-    plt.pause(0.01)
+#     # Plot map
+#     plt.clf()
+#     plt.imshow(occupancy_grid, cmap="gray", origin="lower")
+#     plt.title("Occupancy Grid Map (30x16m)")
+#     plt.pause(0.01)
 
 def line_algo(x0, y0, x1, y1):  # bresenham's line algorithm
     global occupancy_grid
@@ -185,7 +188,7 @@ def line_algo(x0, y0, x1, y1):  # bresenham's line algorithm
     while True:
         if 0 <= y0 < occupancy_grid.shape[0] and 0 <= x0 < occupancy_grid.shape[1]:
             if occupancy_grid[y0][x0] != 1:
-                occupancy_grid[y0][x0] = 0.5  # mark as free
+                occupancy_grid[y0][x0] = 0.2  # mark as free
         if x0 == x1 and y0 == y1:
             break
         e2 = 2 * err
@@ -198,30 +201,30 @@ def line_algo(x0, y0, x1, y1):  # bresenham's line algorithm
 
 
 
-# def plot_points(previous_points, current_points, figure):
-#     # for stopping simulation with the esc key.
-#     plt.gcf().canvas.mpl_connect(
-#         'key_release_event',
-#         lambda event: [exit(0) if event.key == 'escape' else None])
-#     if previous_points.shape[0] == 3:
-#         plt.clf()
-#         axes = figure.add_subplot(111, projection='3d')
-#         axes.scatter(previous_points[0, :], previous_points[1, :],
-#                     previous_points[2, :], c="r", marker=".")
-#         axes.scatter(current_points[0, :], current_points[1, :],
-#                     current_points[2, :], c="b", marker=".")
-#         axes.scatter(0.0, 0.0, 0.0, c="r", marker="x")
-#         figure.canvas.draw()
-#     else:
-#         plt.cla()
-#         plt.plot(previous_points[0, :], previous_points[1, :], ".r")
-#         plt.plot(current_points[0, :], current_points[1, :], ".b")
-#         plt.plot(0.0, 0.0, "xr")
-#         plt.axis("equal")
+def plot_points(previous_points, current_points, figure):
+    # for stopping simulation with the esc key.
+    plt.gcf().canvas.mpl_connect(
+        'key_release_event',
+        lambda event: [exit(0) if event.key == 'escape' else None])
+    if previous_points.shape[0] == 3:
+        plt.clf()
+        axes = figure.add_subplot(111, projection='3d')
+        axes.scatter(previous_points[0, :], previous_points[1, :],
+                    previous_points[2, :], c="r", marker=".")
+        axes.scatter(current_points[0, :], current_points[1, :],
+                    current_points[2, :], c="b", marker=".")
+        axes.scatter(0.0, 0.0, 0.0, c="r", marker="x")
+        figure.canvas.draw()
+    else:
+        plt.cla()
+        plt.plot(previous_points[0, :], previous_points[1, :], ".r")
+        plt.plot(current_points[0, :], current_points[1, :], ".b")
+        plt.plot(0.0, 0.0, "xr")
+        plt.axis("equal")
 
 
 def main():
-    print(__file__ + " start!!")
+    # print(__file__ + " start!!")
 
     # simulation parameters
     nPoint = 1000
@@ -247,12 +250,12 @@ def main():
         current_points = np.vstack((cx, cy))
 
         R, T = icp_matching(previous_points, current_points)
-        print("R:", R)
-        print("T:", T)
+        # print("R:", R)
+        # print("T:", T)
 
 
 def main_3d_points():
-    print(__file__ + " start!!")
+    # print(__file__ + " start!!")
 
     # simulation parameters for 3d point set
     nPoint = 1000
@@ -278,10 +281,11 @@ def main_3d_points():
         current_points = np.vstack((cx, cy, cz))
 
         R, T = icp_matching(previous_points, current_points)
-        print("R:", R)
-        print("T:", T)
+        # print("R:", R)
+        # print("T:", T)
 
 
 if __name__ == '__main__':
     main()
     main_3d_points()
+

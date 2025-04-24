@@ -7,6 +7,8 @@ import math
 import numpy as np
 from iterative_closest_point import icp_matching
 import matplotlib.pyplot as plt
+import os
+
 
 
 #Initialization
@@ -87,7 +89,7 @@ pose_theta = 0
 vL = 0
 vR = 0
 
-SCALE = 20
+SCALE = 30
 
 map_size = (30, 16)  # meters
 resolution = 0.0033  # meters per cell
@@ -96,13 +98,13 @@ grid_height = int(map_size[1] * SCALE)
 occupancy_grid = np.zeros((grid_width, grid_height))
 # occupancy_grid = np.zeros((300, 300))
 lidar_offsets = np.linspace(-LIDAR_ANGLE_RANGE/2., +LIDAR_ANGLE_RANGE/2., LIDAR_ANGLE_BINS)
-# lidar_offsets = lidar_offsets[83:len(lidar_offsets)-83] #provides clearest image
+# lidar_offsets = lidar_offsets[50:len(lidar_offsets)-50] #provides clearest image
 
 def get_pose(gps, compass): #webots provided pose, CHANGE
     x_r = gps.getValues()[0]
     y_r = gps.getValues()[1]
     theta_r = np.arctan2(compass.getValues()[0], compass.getValues()[1])
-    return x_r, y_r, theta_r
+    return x_r, -y_r, theta_r
 
 def rotate(ranges, angles): #rotate angles appropriately
     xs = ranges * np.cos(angles)
@@ -117,14 +119,14 @@ def to_pixels(x, y):
 def to_world(bin, distance):
     global pose_x, pose_y, pose_theta  
     if distance != float('inf') and distance > 0 and distance < 5:
-        print(distance)
+        # print(distance)
         
         x_robot = distance * np.cos(lidar_offsets[bin])
         y_robot = distance * np.sin(lidar_offsets[bin])
 
         transform = np.array([ #homogenous transformation matrix
-            [np.cos(pose_theta), -np.sin(pose_theta), pose_x],
-            [np.sin(pose_theta), np.cos(pose_theta), pose_y],
+            [np.cos(pose_theta), np.sin(pose_theta), pose_x],
+            [-np.sin(pose_theta), np.cos(pose_theta), pose_y],
             [0, 0, 1]
         ])
         
@@ -158,6 +160,18 @@ def line_algo(x0, y0, x1, y1): #bresenham's line algorithm
             err += dx
             y0 += s_inc
 
+TURN_THRESHOLD = 0.05  # Allowable threshold for turning (in radians)
+
+# Previous pose (to detect change in orientation)
+last_pose_theta = 0
+
+# Function to check if the robot is turning
+def is_turning(pose_theta, last_pose_theta):
+    if last_pose_theta is None:
+        return False  # First step, no turning yet
+    delta_theta = abs(pose_theta - last_pose_theta)
+    return delta_theta > TURN_THRESHOLD  # Significant turn if delta exceeds threshold
+
 # ------------------------------------------------------------------
 # Helper Functions
 
@@ -167,59 +181,37 @@ last_scan = None
 last_pose = None
 
 gripper_status="closed"
+STEP = 100
+step = 0
 
 # Main Loop
 while robot.step(timestep) != -1:
-    print("Lidar max range:", lidar.getMaxRange())
+    # print("Lidar max range:", lidar.getMaxRange())
 
         
     pose_x, pose_y, pose_theta = get_pose(gps, compass) #webots pose, CHANGE
+
     # print(pose_x, pose_y, pose_theta)
     lidar_values = np.array(lidar.getRangeImage())
 
-    # display.setColor(0xFF0000)  # Green line
+    # turning = is_turning(pose_theta, last_pose_theta)
+    # # turning = False
+    # if step == STEP:
+    #     last_pose_theta = pose_theta
+    #     step = 0
+    # else:
+    #     print(step)
+    #     step += 1
 
-    # Draw the line (x0, y0) to (x1, y1)
-    # display.drawPixel(400, 300)
-    
-    # scan = lidar_valxues[83:-83]  #clearest image
-
-    # valid = np.isfinite(lidar_values) & (lidar_values > 3) #filter invalid readings
-
-    # filtered_ranges = lidar_values[valid]
-    # filtered_angles = lidar_offsets[valid]   
-    # # print(lidar_values[0])
-    
-    # if len(filtered_ranges) > 10:
-    #     curr = rotate(filtered_ranges, filtered_angles)
-    
-    #     if 'pc_last' in locals(): #if previous scan, apply icp
-    #         try:
-    #             R, t = icp_matching(pc_last, curr)
-    #             dtheta = math.atan2(R[1, 0], R[0, 0])
-    #             dx, dy = t[0, 0], t[1, 0]
-    
-    #             pose_theta += dtheta
-    #             pose_x += dx * math.cos(pose_theta) - dy * math.sin(pose_theta)
-    #             pose_y += dx * math.sin(pose_theta) + dy * math.cos(pose_theta)
-    
-    #         except Exception as e: #to catch improperly formatted dimensions or non-convergence of SVD
-    #             print("[ICP Error]", e)
-    
-    #     pc_last = curr
-    
-    # #update last scan and pose
-    # last_scan = lidar_values
-    # last_pose = (pose_x, pose_y, pose_theta)
+    # if not turning:
 
     pose_pixels = to_pixels(pose_x, pose_y)
-    # print(pose_pixels[0], pose_pixels[1])
-    # display.setColor(0xFF0000)
-    # display.drawPixel(pose_pixels[0], pose_pixels[1])
+
     occupancy_grid[pose_pixels[0]][pose_pixels[1]] = 2
-    # print(occupancy_grid[pose_pixels[0]][pose_pixels[1]])
 
     robot_x, robot_y = to_pixels(pose_x, pose_y)
+
+    
 
     for i in range(len(lidar_offsets)):
         distance = lidar_values[i]
@@ -233,7 +225,7 @@ while robot.step(timestep) != -1:
                 line_algo(robot_x, robot_y, world_x, world_y)
                 # print(f"[DEBUG] Marking map at ({world_x}, {world_y})")
                 # print(occupancy_grid[world_x][world_y])
-                if distance < 1 and distance > 0.3:
+                if distance < 5 and distance > 0:
                     occupancy_grid[world_x][world_y] = 3  
 
 
@@ -262,7 +254,6 @@ while robot.step(timestep) != -1:
     # print(color_grid[975-10:975+10, 4499-10:4499+10])
     plt.clf()
     plt.imshow(color_grid, origin="lower")
-    plt.title("Occupancy Grid Map (30x16m)")
     plt.draw()  # Update the plot
     plt.pause(0.01)  # Keep the plot updated  
 
@@ -271,10 +262,34 @@ while robot.step(timestep) != -1:
     # plt.imshow(occupancy_grid, cmap="gray", origin="lower")
     # plt.title("Occupancy Grid Map (30x16m)")
     # plt.pause(0.01)
-    
-    
+    center_bin = LIDAR_ANGLE_BINS // 2
+    left_bin = int(center_bin - 100)
+    right_bin = int(center_bin + 100)
+
+    # # Thresholds for "clear"
+    forward_clear = lidar_values[center_bin] > 1.0
+    left_clear = lidar_values[left_bin] > 1.0
+    right_clear = lidar_values[right_bin] > 1.0
+
+    # Finite State Machine for obstacle avoidance
+    if forward_clear:
+        vL, vR = 10, 10  # move forward
+    # elif left_clear and not right_clear:
+    #     vL, vR = 2.5, -2.5  # turn left
+    # elif right_clear and not left_clear:
+    #     vL, vR = -2.5, 2.5  # turn right
+    # elif left_clear and right_clear:
+    #     vL, vR = 2.5, -2.5  # both sides open? turn left arbitrarily
+    else:
+        vL, vR = -1, 1  # if boxed in, turn right
+
+
     robot_parts["wheel_left_joint"].setVelocity(vL)
     robot_parts["wheel_right_joint"].setVelocity(vR)
+
+    file_path = os.path.join(os.getcwd(), "occupancy_grid.npy")
+    np.save(file_path, occupancy_grid)
+    print(f"[INFO] Occupancy grid saved to {file_path}")
     
     if(gripper_status=="open"):
         # Close gripper, note that this takes multiple time steps...
