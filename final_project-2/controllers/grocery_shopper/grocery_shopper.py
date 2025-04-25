@@ -5,6 +5,16 @@
 from controller import Robot
 import math
 import numpy as np
+from iterative_closest_point import icp_matching
+import matplotlib.pyplot as plt
+import os
+import torch
+import cv2
+from ultralytics import YOLO
+
+
+
+
 
 #Initialization
 print("=== Initializing Grocery Shopper...")
@@ -18,12 +28,17 @@ N_PARTS = 12
 LIDAR_ANGLE_BINS = 667
 LIDAR_SENSOR_MAX_RANGE = 5.5 # Meters
 LIDAR_ANGLE_RANGE = math.radians(240)
+print(LIDAR_ANGLE_BINS)
+lidar_offsets = np.linspace(-LIDAR_ANGLE_RANGE / 2., LIDAR_ANGLE_RANGE / 2., LIDAR_ANGLE_BINS)
+# lidar_offsets = lidar_offsets[::-1]
 
 # create the Robot instance.
 robot = Robot()
 
 # get the time step of the current world.
 timestep = int(robot.getBasicTimeStep())
+
+
 
 # The Tiago robot has multiple motors, each identified by their names below
 part_names = ("head_2_joint", "head_1_joint", "torso_lift_joint", "arm_1_joint",
@@ -52,7 +67,14 @@ right_gripper_enc.enable(timestep)
 # Enable Camera
 camera = robot.getDevice('camera')
 camera.enable(timestep)
-camera.recognitionEnable(timestep)
+# camera.recognitionEnable(timestep)
+width = camera.getWidth()
+height = camera.getHeight()
+
+# Load your trained YOLOv5 model
+model = YOLO("best.pt")
+model.conf = 0.5  # confidence threshold
+model.iou = 0.4   # IOU threshold for NMS
 
 # Enable GPS and compass localization
 gps = robot.getDevice("gps")
@@ -68,6 +90,9 @@ lidar.enablePointCloud()
 # Enable display
 display = robot.getDevice("display")
 
+keyboard = robot.getKeyboard()
+keyboard.enable(timestep)
+
 # Odometry
 pose_x     = 0
 pose_y     = 0
@@ -76,26 +101,166 @@ pose_theta = 0
 vL = 0
 vR = 0
 
-lidar_sensor_readings = [] # List to hold sensor readings
+# MODE = 'map'
+MODE = 'navigation'
+
+SCALE = 30
+
+map_size = (30, 16)  # meters
+resolution = 0.0033  # meters per cell
+grid_width = int(map_size[0] * SCALE)
+grid_height = int(map_size[1] * SCALE)
+occupancy_grid = np.zeros((grid_width, grid_height))
+# occupancy_grid = np.zeros((300, 300))
 lidar_offsets = np.linspace(-LIDAR_ANGLE_RANGE/2., +LIDAR_ANGLE_RANGE/2., LIDAR_ANGLE_BINS)
-lidar_offsets = lidar_offsets[83:len(lidar_offsets)-83] # Only keep lidar readings not blocked by robot chassis
+# lidar_offsets = lidar_offsets[50:len(lidar_offsets)-50] #provides clearest image
 
-map = None
+def get_pose(gps, compass): #webots provided pose, CHANGE
+    x_r = gps.getValues()[0]
+    y_r = gps.getValues()[1]
+    theta_r = np.arctan2(compass.getValues()[0], compass.getValues()[1])
+    return x_r, -y_r, theta_r
 
+
+def to_pixels(x, y):
+   return int((x + 15) * SCALE), int((y + 8.05) * SCALE)
+    
+  
+def to_world(bin, distance):
+    global pose_x, pose_y, pose_theta  
+    if distance != float('inf') and distance > 0 and distance < 5:
+        # print(distance)
+        
+        x_robot = distance * np.cos(lidar_offsets[bin])
+        y_robot = distance * np.sin(lidar_offsets[bin])
+
+        transform = np.array([ #homogenous transformation matrix
+            [np.cos(pose_theta), np.sin(pose_theta), pose_x],
+            [-np.sin(pose_theta), np.cos(pose_theta), pose_y],
+            [0, 0, 1]
+        ])
+        
+        # robot = np.array([pose_x, pose_y, 1])
+        robot = np.array([x_robot, y_robot, 1])
+
+        world = np.dot(transform, robot)
+
+        return world[0], world[1] 
+    return None
+
+
+def line_algo(x0, y0, x1, y1): #bresenham's line algorithm
+    # print(x0, y0, x1, y1)
+    dx = abs(x1 - x0)
+    dy = abs(y1 - y0)
+    x_inc = 1 if x0 < x1 else -1 #takes care of lines going either way
+    s_inc = 1 if y0 < y1 else -1
+    err = dx - dy
+
+    while True:
+        if occupancy_grid[x0][y0] != 2 and occupancy_grid[x0][y0] != 3: #make sure pixel is not an obstacle or on the robot path before filling it in with white
+            occupancy_grid[x0][y0] = 1 
+        if x0 == x1 and y0 == y1:
+            break
+        e2 = 2 * err
+        if e2 > -dy:
+            err -= dy
+            x0 += x_inc
+        if e2 < dx:
+            err += dx
+            y0 += s_inc
 
 
 # ------------------------------------------------------------------
 # Helper Functions
 
+poses = []  #list of (x, y, theta)
+scans = []  #list of LIDAR
+last_scan = None
+last_pose = None
 
 gripper_status="closed"
+STEP = 100
+step = 0
 
 # Main Loop
 while robot.step(timestep) != -1:
+    if MODE == 'map':
+        pose_x, pose_y, pose_theta = get_pose(gps, compass) #webots pose, CHANGE
+
+        # print(pose_x, pose_y, pose_theta)
+        lidar_values = np.array(lidar.getRangeImage())
+        pose_pixels = to_pixels(pose_x, pose_y)
+        occupancy_grid[pose_pixels[0]][pose_pixels[1]] = 2
+        robot_x, robot_y = to_pixels(pose_x, pose_y)
+
+        
+
+        for i in range(len(lidar_offsets)):
+            distance = lidar_values[i]
+            world_coords = to_world(i, lidar_values[i])
+            if world_coords is not None: #if distance is infinity world coords will be none
+                world_x, world_y = to_pixels(world_coords[0], world_coords[1])
+
+        
+                if 0 <= world_x < grid_width and 0 <= world_y < grid_height:
+                    line_algo(robot_x, robot_y, world_x, world_y)
+                    if distance < 5 and distance > 0:
+                        occupancy_grid[world_x][world_y] = 3  
+        color_grid = np.zeros((grid_width, grid_height, 3), dtype=np.uint8)
+
+        color_grid[occupancy_grid == 1] = [255, 255, 255]  # Free space = White
+        color_grid[occupancy_grid == 2] = [255, 0, 0]      # Robot path = Red
+        color_grid[occupancy_grid == 3] = [0, 0, 255]      # Obstacles = Blue
+        plt.clf()
+        plt.imshow(color_grid, origin="lower")
+        plt.draw()  # Update the plot
+        plt.pause(0.01)  # Keep the plot updated  
+
+        center_bin = LIDAR_ANGLE_BINS // 2
+        left_bin = int(center_bin - 100)
+        right_bin = int(center_bin + 100)
+
+        # # Thresholds for "clear"
+        forward_clear = lidar_values[center_bin] > 1.0
+        left_clear = lidar_values[left_bin] > 1.0
+        right_clear = lidar_values[right_bin] > 1.0
+
+        # Finite State Machine for obstacle avoidance
+        if forward_clear:
+            vL, vR = 10, 10  # move forward
+        # elif left_clear and not right_clear:
+        #     vL, vR = 2.5, -2.5  # turn left
+        # elif right_clear and not left_clear:
+        #     vL, vR = -2.5, 2.5  # turn right
+        # elif left_clear and right_clear:
+        #     vL, vR = 2.5, -2.5  # both sides open? turn left arbitrarily
+        else:
+            vL, vR = 1, -1  # if boxed in, turn right
+
+
+        robot_parts["wheel_left_joint"].setVelocity(vL)
+        robot_parts["wheel_right_joint"].setVelocity(vR)
+
+        file_path = os.path.join(os.getcwd(), "occupancy_grid.npy")
+        np.save(file_path, occupancy_grid)
+        print(f"[INFO] Occupancy grid saved to {file_path}")
+    elif MODE == 'navigation':
+        img = camera.getImageArray()
+        img_np = np.array(img, dtype=np.uint8).reshape((height, width, 3))  #3 for RGB channels
+
+        img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR) #convert to BGR
+
+        results = model(img_bgr)[0]  #inference
+        detections = results.boxes.data.cpu().numpy()  #x1, y1, x2, y2, confidence, class
+        class_names = model.names
+
+        for det in detections:
+            x1, y1, x2, y2, conf, cls = det
+            label = class_names[int(cls)]
+            print(f"[DETECTION] {label} ({conf:.2f}) at [{int(x1)}, {int(y1)}, {int(x2)}, {int(y2)}]")
     
-    
-    robot_parts["wheel_left_joint"].setVelocity(vL)
-    robot_parts["wheel_right_joint"].setVelocity(vR)
+
     
     if(gripper_status=="open"):
         # Close gripper, note that this takes multiple time steps...
@@ -109,3 +274,11 @@ while robot.step(timestep) != -1:
         robot_parts["gripper_right_finger_joint"].setPosition(0.045)
         if left_gripper_enc.getValue()>=0.044:
             gripper_status="open"
+    
+
+
+
+if MODE == 'map':
+    file_path = os.path.join(os.getcwd(), "occupancy_grid.npy")
+    np.save(file_path, occupancy_grid)
+    print(f"[INFO] Occupancy grid saved to {file_path}")
