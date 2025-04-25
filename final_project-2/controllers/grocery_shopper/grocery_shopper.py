@@ -1,4 +1,4 @@
-"""grocery controller."""
+"""""grocery controller."""
 
 # Apr 1, 2025
 
@@ -8,6 +8,7 @@ import numpy as np
 from iterative_closest_point import icp_matching
 import matplotlib.pyplot as plt
 import os
+import random
 
 
 
@@ -96,6 +97,7 @@ resolution = 0.0033  # meters per cell
 grid_width = int(map_size[0] * SCALE)
 grid_height = int(map_size[1] * SCALE)
 occupancy_grid = np.zeros((grid_width, grid_height))
+state_bounds = np.array([[0,grid_width],[0,grid_height]])
 # occupancy_grid = np.zeros((300, 300))
 lidar_offsets = np.linspace(-LIDAR_ANGLE_RANGE/2., +LIDAR_ANGLE_RANGE/2., LIDAR_ANGLE_BINS)
 # lidar_offsets = lidar_offsets[50:len(lidar_offsets)-50] #provides clearest image
@@ -183,6 +185,187 @@ last_pose = None
 gripper_status="closed"
 STEP = 100
 step = 0
+mode = "planner"
+
+
+def get_distance_helper(point1,point2):
+    return np.linalg.norm(np.array(point1) - np.array(point2))
+
+def get_nearest_vertex(node_list, q_point):
+    '''
+    @param node_list: List of Node objects
+    @param q_point: n-dimensional array representing a point
+    @return Node in node_list with closest node.point to query q_point
+    '''
+    # TODO: Your Code Here
+    closest_vertex = None
+    for node in node_list:
+        if closest_vertex==None:
+            closest_vertex = node   
+        else:
+            node_distance = get_distance_helper(q_point, node.point)
+            current_closest_distance = get_distance_helper(q_point, closest_vertex.point)
+            if node_distance < current_closest_distance:
+                closest_vertex = node
+    return closest_vertex
+
+
+def steer(from_point, to_point, delta_q):
+    '''
+    @param from_point: n-Dimensional array (point) where the path to "to_point" is originating from (e.g., [1.,2.])
+    @param to_point: n-Dimensional array (point) indicating destination (e.g., [0., 0.])
+    @param delta_q: Max path-length to cover, possibly resulting in changes to "to_point" (e.g., 0.2)
+    @returns path: list of points leading from "from_point" to "to_point" (inclusive of endpoints)  (e.g., [ [1.,2.], [1., 1.], [0., 0.] ])
+    '''
+
+    path = []
+
+    # TODO: Figure out if you can use "to_point" as-is, or if you need to move it so that it's only delta_q distance away
+    distance = get_distance_helper(from_point,to_point)
+    if(distance > delta_q):
+        direction = (to_point-from_point)/distance
+        new_to_point = delta_q*direction+from_point
+        return np.linspace(from_point,new_to_point,num=10)
+    else:
+        return np.linspace(from_point,to_point,num=10)
+    
+def get_random_valid_vertex(state_valid, bounds, obstacles):
+    vertex = None
+    while vertex is None: # Get starting vertex
+        pt = np.random.rand(bounds.shape[0]) * (bounds[:,1]-bounds[:,0]) + bounds[:,0]
+        if state_valid(pt):
+            vertex = pt
+    return vertex
+
+def near(node_list,q_new,r):
+    near_list = []
+    for node in node_list:
+        distance = get_distance_helper(node.point,q_new)
+        if(distance <=r): 
+            near_list.append(node)
+    return near_list
+
+    
+#------ RRT Star Helper --------#
+
+if mode == "planner":
+    start_w = (-7.97232, -4.84369) # (Pose_X, Pose_Y) in meters CHANGE
+    end_w = (-2.20815, -8.84167) # (Pose_X, Pose_Y) in meters
+
+    # Convert the start_w and end_w from the webots coordinate frame into the map frame
+
+    def world_to_map(coords):
+        return (abs(int(coords[0]*30)), abs(int(coords[1]*30)))
+
+    start = world_to_map(start_w) # (x, y) in 360x360 map
+    end = world_to_map(end_w) # (x, y) in 360x360 map
+    print(start, end)
+
+    class Node:
+        def __init__(self, pt, parent=None):
+                self.point = pt # n-Dimensional point
+                self.parent = parent # Parent node
+                self.path_from_parent = [] # List of points along the way from the parent node (for visualization)
+            
+    def rrt_star(state_bounds, obstacles, state_is_valid, starting_point, goal_point, k, delta_q):
+   
+#   RRT* Pseudo Code CREDIT: https://www.ri.cmu.edu/pub_files/2014/9/TR-2013-JDG003.pdf
+        node_list = []
+        cost_list = {}
+        first = Node(starting_point, parent=None)
+        node_list.append(first) # Add Node at starting point with no parent
+        cost_list.update({tuple(first.point):0})
+        rad = delta_q*1.5
+        for i in range(1,k):
+            if goal_point is not None and random.random() < 0.05: 
+                q_rand = goal_point
+            else:
+                q_rand = get_random_valid_vertex(state_is_valid,state_bounds,obstacles)
+            q_nearest = get_nearest_vertex(node_list,q_rand)
+            path_rand_nearest= steer(q_nearest.point,q_rand,delta_q)
+            q_new = path_rand_nearest[-1]
+            valid = True
+            for point in path_rand_nearest:
+                if not state_is_valid(point):
+                    valid = False
+            if valid:
+                new_node = Node(q_new,q_nearest)
+                new_node.path_from_parent = path_rand_nearest
+                node_list.append(new_node)
+                node_cost = cost_list[tuple(new_node.parent.point)]+ get_distance_helper(new_node.point, new_node.parent.point)
+                cost_list.update({tuple(new_node.point):node_cost})
+                q_near_list = near(node_list,new_node.point,rad)
+                q_min = q_nearest
+                c_min = cost_list.get(tuple(q_nearest.point)) + get_distance_helper(q_nearest.point,new_node.point)
+                for node in q_near_list:
+                    near_node_cost = cost_list[tuple(node.point)] + get_distance_helper(node.point,new_node.point)
+                    if(near_node_cost<c_min):
+                        node_path = np.linspace(node.point,new_node.point,num = 10)
+                        path_valid = True
+                        for point in node_path:
+                            if not state_is_valid(point):
+                                path_valid = False
+                        if(path_valid):
+                            q_min = node
+                            c_min = near_node_cost
+                new_node.parent = q_min
+                new_node.path_from_parent = np.linspace(new_node.parent.point,new_node.point,num = 10)
+                cost_list[tuple(new_node.point)] = c_min
+                for node in q_near_list:
+                    c_near = cost_list[tuple(node.point)]
+                    c_new = cost_list[(tuple(new_node.point))] + get_distance_helper(node.point,new_node.point)
+                    if(c_new < c_near): 
+                        node_parent_path = np.linspace(new_node.point,node.point,num=10)
+                        path_valid = True
+                        for point in node_parent_path:
+                            if not state_is_valid(point):
+                                path_valid = False
+                        if(path_valid):
+                            node.parent = new_node
+                            node.path_from_parent = np.linspace(new_node.point,node.point,num=10)
+                            cost_list[tuple(node.point)] = c_new
+                            
+
+                if(goal_point is not None):
+                    distance_from_goal = get_distance_helper(new_node.point,goal_point)
+                    if(distance_from_goal < 1e-5):
+                        return node_list
+
+        return node_list
+    map = np.load("map.npy")
+    map = np.rot90(map, 3)
+    
+    plt.imshow(map, cmap='gray')
+    plt.title("Map")
+    plt.axis('off')
+    plt.savefig("map_visualization.png")
+   
+    # Part 2.2: Compute an approximation of the “configuration space”
+    KERNEL_DIM = 16
+    kernel = np.ones(shape=[KERNEL_DIM, KERNEL_DIM])
+    convolved_map = convolve2d(map, kernel)
+    convolved_map = convolved_map > 0
+    convolved_map = convolved_map * 1
+    # plt.imshow(convolved_map)
+    # plt.show()
+
+    # Part 2.3 continuation: Call path_planner
+    waypoints = rrt_star(state_bounds, state_is_valid, start, end, deltaq)
+
+    # Part 2.4: Turn paths into waypoints and save on disk as path.npy and visualize it
+    path_points = []  # normal path
+    for point in waypoints:
+        path_points.append((12 * (point[1] / -360), (12 * point[0] / -360)+0.3))
+    np.save("path.npy", path_points)
+
+    # path_map = np.load("path.npy")
+    # plt.imshow(convolved_map)
+    # y_coords, x_coords = zip(*waypoints)
+    # plt.plot(x_coords, y_coords, color='red', linewidth=1)
+    # plt.show()
+
+
+
 
 # Main Loop
 while robot.step(timestep) != -1:
@@ -252,10 +435,10 @@ while robot.step(timestep) != -1:
     # Unknown space remains black (0,0,0)
     # print(color_grid[975][4499])
     # print(color_grid[975-10:975+10, 4499-10:4499+10])
-    plt.clf()
-    plt.imshow(color_grid, origin="lower")
-    plt.draw()  # Update the plot
-    plt.pause(0.01)  # Keep the plot updated  
+    # plt.clf()
+    # plt.imshow(color_grid, origin="lower")
+    # plt.draw()  # Update the plot
+    # plt.pause(0.01)  # Keep the plot updated  
 
 
     # plt.clf()
@@ -303,3 +486,4 @@ while robot.step(timestep) != -1:
         robot_parts["gripper_right_finger_joint"].setPosition(0.045)
         if left_gripper_enc.getValue()>=0.044:
             gripper_status="open"
+
