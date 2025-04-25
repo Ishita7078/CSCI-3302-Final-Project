@@ -244,7 +244,7 @@ while robot.step(timestep) != -1:
 
         file_path = os.path.join(os.getcwd(), "occupancy_grid.npy")
         np.save(file_path, occupancy_grid)
-        print(f"[INFO] Occupancy grid saved to {file_path}")
+        print(f"Occupancy grid saved to {file_path}")
     elif MODE == 'navigation':
         img = camera.getImageArray()
         img_np = np.array(img, dtype=np.uint8).reshape((height, width, 3))  #3 for RGB channels
@@ -255,8 +255,8 @@ while robot.step(timestep) != -1:
         detections = results.boxes.data.cpu().numpy()  #x1, y1, x2, y2, confidence, class
         class_names = model.names
 
-        for det in detections:
-            x1, y1, x2, y2, conf, cls = det
+        for detection in detections:
+            x1, y1, x2, y2, conf, cls = detection
             label = class_names[int(cls)]
             print(f"[DETECTION] {label} ({conf:.2f}) at [{int(x1)}, {int(y1)}, {int(x2)}, {int(y2)}]")
     
