@@ -5,7 +5,6 @@
 from controller import Robot
 import math
 import numpy as np
-from iterative_closest_point import icp_matching
 import matplotlib.pyplot as plt
 import os
 import torch
@@ -13,9 +12,6 @@ import cv2
 from scipy.signal import convolve2d
 import random
 from ultralytics import YOLO
-
-
-
 
 
 #Initialization
@@ -122,6 +118,7 @@ lidar_offsets = np.linspace(-LIDAR_ANGLE_RANGE/2., +LIDAR_ANGLE_RANGE/2., LIDAR_
 
 
 def odometry():
+    global vL, vR, pose_x, pose_y, pose_theta
     dt = timestep/1000
 
     vL = vL / MAX_SPEED * MAX_SPEED_MS
@@ -195,8 +192,10 @@ def line_algo(x0, y0, x1, y1): #bresenham's line algorithm
             err += dx
             y0 += s_inc
 
+
 def get_distance_helper(point1,point2):
     return np.linalg.norm(np.array(point1) - np.array(point2))
+
 
 def get_nearest_vertex(node_list, q_point):
     '''
@@ -238,7 +237,8 @@ def steer(from_point, to_point, delta_q):
 
     # Convert to list of tuples of ints
     return [np.array((int(p[0]), int(p[1]))) for p in line]
-    
+
+
 def get_random_valid_vertex(state_valid, convolved_map):
     vertex = None
     while vertex is None: # Get starting vertex
@@ -249,6 +249,7 @@ def get_random_valid_vertex(state_valid, convolved_map):
             vertex = pt
     return vertex
 
+
 def near(node_list,q_new,r):
     near_list = []
     for node in node_list:
@@ -256,6 +257,7 @@ def near(node_list,q_new,r):
         if(distance <=r): 
             near_list.append(node)
     return near_list
+
 
 def state_is_valid(pt,convolved_map):
     x = int(pt[0])
@@ -265,6 +267,7 @@ def state_is_valid(pt,convolved_map):
             if(convolved_map[y,x] == 0):
                 return True           
     return False
+
 
 def visualize_2D_graph(convolved_map, nodes, goal_point=None, filename=None):
         fig = plt.figure()
@@ -302,7 +305,6 @@ def visualize_2D_graph(convolved_map, nodes, goal_point=None, filename=None):
             fig.savefig(filename)
         else:
             plt.show()
-
 
 
 #------ RRT Star Helper --------#
@@ -539,24 +541,21 @@ while robot.step(timestep) != -1:
             x1, y1, x2, y2, conf, cls = det
             label = class_names[int(cls)]
             print(f"[DETECTION] {label} ({conf:.2f}) at [{int(x1)}, {int(y1)}, {int(x2)}, {int(y2)}]")
-    
-
-    
-    if(gripper_status=="open"):
-        # Close gripper, note that this takes multiple time steps...
-        robot_parts["gripper_left_finger_joint"].setPosition(0)
-        robot_parts["gripper_right_finger_joint"].setPosition(0)
-        if right_gripper_enc.getValue()<=0.005:
-            gripper_status="closed"
-    else:
-        # Open gripper
-        robot_parts["gripper_left_finger_joint"].setPosition(0.045)
-        robot_parts["gripper_right_finger_joint"].setPosition(0.045)
-        if left_gripper_enc.getValue()>=0.044:
-            gripper_status="open"
-    
 
 
+    # if(gripper_status=="open"):
+    #     # Close gripper, note that this takes multiple time steps...
+    #     robot_parts["gripper_left_finger_joint"].setPosition(0)
+    #     robot_parts["gripper_right_finger_joint"].setPosition(0)
+    #     if right_gripper_enc.getValue()<=0.005:
+    #         gripper_status="closed"
+    # else:
+    #     # Open gripper
+    #     robot_parts["gripper_left_finger_joint"].setPosition(0.045)
+    #     robot_parts["gripper_right_finger_joint"].setPosition(0.045)
+    #     if left_gripper_enc.getValue()>=0.044:
+    #         gripper_status="open"
+    
 
 if MODE == 'map':
     file_path = os.path.join(os.getcwd(), "occupancy_grid.npy")
