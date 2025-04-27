@@ -94,6 +94,8 @@ vR = 0
 
 SCALE = 30
 
+HEIGHT = 914
+WIDTH = 494
 map_size = (30, 16)  # meters
 resolution = 0.0033  # meters per cell
 grid_width = int(map_size[0] * SCALE)
@@ -186,6 +188,7 @@ last_pose = None
 gripper_status="closed"
 STEP = 100
 step = 0
+
 mode = "planner"
 
 
@@ -226,16 +229,19 @@ def steer(from_point, to_point, delta_q):
     if(distance > delta_q):
         direction = (to_point-from_point)/distance
         new_to_point = delta_q*direction+from_point
-        return np.linspace(from_point,new_to_point,num=10)
+        line = np.linspace(from_point, new_to_point, num=10)
     else:
-        return np.linspace(from_point,to_point,num=10)
+        line = np.linspace(from_point, to_point, num=10)
+
+    # Convert to list of tuples of ints
+    return [np.array((int(p[0]), int(p[1]))) for p in line]
     
 def get_random_valid_vertex(state_valid, convolved_map):
     vertex = None
     while vertex is None: # Get starting vertex
-        random_x = np.random.rand() * grid_width
-        random_y = np.random.rand() * grid_height
-        pt = (random_x,random_y)
+        random_x = np.random.randint(0,WIDTH)
+        random_y = np.random.randint(0,HEIGHT)
+        pt = np.array((random_x,random_y))
         if state_valid(pt, convolved_map):
             vertex = pt
     return vertex
@@ -249,26 +255,68 @@ def near(node_list,q_new,r):
     return near_list
 
 def state_is_valid(pt,convolved_map):
-    if 0 <= pt[0] < grid_width:
-        if 0 <= pt[1] < grid_height:
-            if(convolved_map[pt[0]][pt[1]] == 0):
-                return True
-                
+    x = int(pt[0])
+    y = int(pt[1])
+    if 0 <= x < WIDTH:
+        if 0 <= y < HEIGHT:
+            if(convolved_map[y,x] == 0):
+                return True           
     return False
+
+def visualize_2D_graph(convolved_map, nodes, goal_point=None, filename=None):
+        fig = plt.figure()
+        plt.xlim(0,WIDTH)
+        plt.ylim(0,HEIGHT)
+
+        goal_node = None
+        for node in nodes:
+            if node.parent is not None:
+                node_path = np.array(node.path_from_parent)
+                plt.plot(node_path[:,0], node_path[:,1], '-b')
+            if goal_point is not None and np.linalg.norm(node.point - np.array(goal_point)) <= 1e-5:
+                goal_node = node
+                plt.plot(node.point[0], node.point[1], 'k^')
+            else:
+                plt.plot(node.point[0], node.point[1], 'ro')
+
+        plt.plot(nodes[0].point[0], nodes[0].point[1], 'ko')
+
+        if goal_node is not None:
+            cur_node = goal_node
+            while cur_node is not None: 
+                if cur_node.parent is not None:
+                    node_path = np.array(cur_node.path_from_parent)
+                    plt.plot(node_path[:,0], node_path[:,1], '--y')
+                    cur_node = cur_node.parent
+                else:
+                    break
+
+        if goal_point is not None:
+            plt.plot(goal_point[0], goal_point[1], 'gx')
+
+
+        if filename is not None:
+            fig.savefig(filename)
+        else:
+            plt.show()
+
+
+
 #------ RRT Star Helper --------#
 
 if mode == "planner":
-    start_w = (-7.97232, -4.84369) # (Pose_X, Pose_Y) in meters CHANGE
-    end_w = (-2.20815, -8.84167) # (Pose_X, Pose_Y) in meters
+    # start_w = (-7.97232, -4.84369) # (Pose_X, Pose_Y) in meters CHANGE
+    # end_w = (-2.20815, -8.84167) # (Pose_X, Pose_Y) in meters
 
-    # Convert the start_w and end_w from the webots coordinate frame into the map frame
+    # # Convert the start_w and end_w from the webots coordinate frame into the map frame
 
-    def world_to_map(coords):
-        return (abs(int(coords[0]*30)), abs(int(coords[1]*30)))
+    # def world_to_map(coords):
+    #     return (abs(int(coords[0]*30)), abs(int(coords[1]*30)))
 
-    start = world_to_map(start_w) # (x, y) in 360x360 map
-    end = world_to_map(end_w) # (x, y) in 360x360 map
-    print(start, end)
+    # start = world_to_map(start_w) # (x, y) in 360x360 map
+    # end = world_to_map(end_w) # (x, y) in 360x360 map
+    # print(start, end)
+
 
     class Node:
         def __init__(self, pt, parent=None):
@@ -278,7 +326,7 @@ if mode == "planner":
             
     def rrt_star(convolved_map, state_is_valid, starting_point, goal_point, k, delta_q):
    
-#   RRT* Pseudo Code CREDIT: https://www.ri.cmu.edu/pub_files/2014/9/TR-2013-JDG003.pdf
+    #   RRT* Pseudo Code CREDIT: https://www.ri.cmu.edu/pub_files/2014/9/TR-2013-JDG003.pdf
         node_list = []
         cost_list = {}
         first = Node(starting_point, parent=None)
@@ -295,7 +343,7 @@ if mode == "planner":
             q_new = path_rand_nearest[-1]
             valid = True
             for point in path_rand_nearest:
-                if not state_is_valid(point):
+                if state_is_valid(point,convolved_map) == False:
                     valid = False
             if valid:
                 new_node = Node(q_new,q_nearest)
@@ -312,7 +360,7 @@ if mode == "planner":
                         node_path = np.linspace(node.point,new_node.point,num = 10)
                         path_valid = True
                         for point in node_path:
-                            if not state_is_valid(point):
+                            if state_is_valid(point,convolved_map) == False:
                                 path_valid = False
                         if(path_valid):
                             q_min = node
@@ -327,7 +375,7 @@ if mode == "planner":
                         node_parent_path = np.linspace(new_node.point,node.point,num=10)
                         path_valid = True
                         for point in node_parent_path:
-                            if not state_is_valid(point):
+                            if state_is_valid(point,convolved_map) == False:
                                 path_valid = False
                         if(path_valid):
                             node.parent = new_node
@@ -338,43 +386,84 @@ if mode == "planner":
                 if(goal_point is not None):
                     distance_from_goal = get_distance_helper(new_node.point,goal_point)
                     if(distance_from_goal < 1e-5):
+                        print("Found the end!")
                         return node_list
-
+        
+        print(f"Did not find end, finished after {k} iterations.")
         return node_list
-    map = np.load("map.npy")
     
-    plt.imshow(map, cmap='gray')
-    plt.title("Map")
-    plt.axis('off')
-    plt.savefig("map_visualization.png")
+    #declare start and end and load map
+    start = np.array((20,20))
+    end = np.array((312,807))
+    map = np.load("map.npy")
+    map = map==3
    
-    # Part 2.2: Compute an approximation of the “configuration space”
-    KERNEL_DIM = 16
+    #Convolve map
+    KERNEL_DIM = 15
     kernel = np.ones(shape=[KERNEL_DIM, KERNEL_DIM])
     convolved_map = convolve2d(map, kernel)
     convolved_map = convolved_map > 0
     convolved_map = convolved_map * 1
-    # plt.imshow(convolved_map)
-    # plt.show()
+    height,width = convolved_map.shape
 
-    # Part 2.3 continuation: Call path_planner
-    waypoints = rrt_star(convolved_map, state_is_valid, start, end, 500, np.linalg.norm(convolved_map/10.))
+    #call path planner
+    waypoints_all = rrt_star(convolved_map, state_is_valid, start, end, 2000, 30)
+    
+    plt.imshow(convolved_map)
+    #UNCOMMENT TO SEE ALL POINTS IN RRT* 
+    # for waypt in waypoints_all:
+    #     #plt.plot(waypt.point[0], waypt.point[1], marker='o', color='blue', markersize=2) 
+    
+    #uncomment lines below to see all trees
+    goal_node = None
+    for node in waypoints_all:
+        if node.parent is not None:
+            node_path = np.array(node.path_from_parent)
+            #plt.plot(node_path[:,0], node_path[:,1], '-b')
+        if np.linalg.norm(node.point - np.array(end)) <= 1e-5:
+            goal_node = node
+            #plt.plot(node.point[0], node.point[1], 'k^')
+        # else:
+        #     plt.plot(node.point[0], node.point[1], 'ro')
 
-    # Part 2.4: Turn paths into waypoints and save on disk as path.npy and visualize it
-    path_points = []  # normal path
-    for point in waypoints:
-        path_points.append((12 * (point[1] / -360), (12 * point[0] / -360)+0.3))
-    np.save("path.npy", path_points)
+    plt.plot(waypoints_all[0].point[0], waypoints_all[0].point[1], 'ko')
 
-    # path_map = np.load("path.npy")
-    # plt.imshow(convolved_map)
-    # y_coords, x_coords = zip(*waypoints)
+    #waypoints for the path! 
+    path_waypoints = []
+
+    if goal_node is not None:
+        cur_node = goal_node
+        while cur_node is not None: 
+            if cur_node.parent is not None:
+                plt.plot(cur_node.point[0], cur_node.point[1], marker='o', color='blue', markersize=2)
+                path_waypoints.append(cur_node.point)
+                node_path = np.array(cur_node.path_from_parent)
+                plt.plot(node_path[:,0], node_path[:,1], '--y')
+                cur_node = cur_node.parent
+            else:
+                break
+
+    if goal_node is not None:
+        plt.plot(goal_node.point[0], goal_node.point[1], 'gx')
+    
+    print(path_waypoints)
+    
+    path_world_coords = []
+    for point in path_waypoints:
+        path_world_coords.append(((point[1]/30) - 15, (point[0] /30)-8.05))
+    np.save("path.npy", path_world_coords)
+    
+    print(path_world_coords)
+
+    path_map = np.load("path.npy")
+
+    # x_coords, y_coords = zip(*waypoints_points)
     # plt.plot(x_coords, y_coords, color='red', linewidth=1)
-    # plt.show()
-    path_points = []  # normal path
-    for point in waypoints:
-        path_points.append((12 * (point[1] / -360), (12 * point[0] / -360)+0.3))
-    np.save("path.npy", path_points)
+    plt.plot(start[0], start[1], marker='^', color='lightgreen', markersize=7)
+    plt.plot(end[0], end[1], marker='^', color='lightgreen', markersize=7)
+    plt.show()
+    visualize_2D_graph(convolved_map,waypoints_all,end,"test2.png")
+
 
 
 
