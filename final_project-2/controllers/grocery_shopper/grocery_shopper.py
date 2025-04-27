@@ -9,7 +9,9 @@ from iterative_closest_point import icp_matching
 import matplotlib.pyplot as plt
 import os
 import random
-
+from scipy.signal import convolve2d # Uncomment if you want to use something else for finding the configuration space
+from ikpy.chain import Chain
+from ikpy.link import OriginLink, URDFLink
 
 
 #Initialization
@@ -97,7 +99,6 @@ resolution = 0.0033  # meters per cell
 grid_width = int(map_size[0] * SCALE)
 grid_height = int(map_size[1] * SCALE)
 occupancy_grid = np.zeros((grid_width, grid_height))
-state_bounds = np.array([[0,grid_width],[0,grid_height]])
 # occupancy_grid = np.zeros((300, 300))
 lidar_offsets = np.linspace(-LIDAR_ANGLE_RANGE/2., +LIDAR_ANGLE_RANGE/2., LIDAR_ANGLE_BINS)
 # lidar_offsets = lidar_offsets[50:len(lidar_offsets)-50] #provides clearest image
@@ -229,11 +230,13 @@ def steer(from_point, to_point, delta_q):
     else:
         return np.linspace(from_point,to_point,num=10)
     
-def get_random_valid_vertex(state_valid, bounds, obstacles):
+def get_random_valid_vertex(state_valid, convolved_map):
     vertex = None
     while vertex is None: # Get starting vertex
-        pt = np.random.rand(bounds.shape[0]) * (bounds[:,1]-bounds[:,0]) + bounds[:,0]
-        if state_valid(pt):
+        random_x = np.random.rand() * grid_width
+        random_y = np.random.rand() * grid_height
+        pt = (random_x,random_y)
+        if state_valid(pt, convolved_map):
             vertex = pt
     return vertex
 
@@ -245,7 +248,13 @@ def near(node_list,q_new,r):
             near_list.append(node)
     return near_list
 
-    
+def state_is_valid(pt,convolved_map):
+    if 0 <= pt[0] < grid_width:
+        if 0 <= pt[1] < grid_height:
+            if(convolved_map[pt[0]][pt[1]] == 0):
+                return True
+                
+    return False
 #------ RRT Star Helper --------#
 
 if mode == "planner":
@@ -267,7 +276,7 @@ if mode == "planner":
                 self.parent = parent # Parent node
                 self.path_from_parent = [] # List of points along the way from the parent node (for visualization)
             
-    def rrt_star(state_bounds, obstacles, state_is_valid, starting_point, goal_point, k, delta_q):
+    def rrt_star(convolved_map, state_is_valid, starting_point, goal_point, k, delta_q):
    
 #   RRT* Pseudo Code CREDIT: https://www.ri.cmu.edu/pub_files/2014/9/TR-2013-JDG003.pdf
         node_list = []
@@ -280,7 +289,7 @@ if mode == "planner":
             if goal_point is not None and random.random() < 0.05: 
                 q_rand = goal_point
             else:
-                q_rand = get_random_valid_vertex(state_is_valid,state_bounds,obstacles)
+                q_rand = get_random_valid_vertex(state_is_valid,convolved_map)
             q_nearest = get_nearest_vertex(node_list,q_rand)
             path_rand_nearest= steer(q_nearest.point,q_rand,delta_q)
             q_new = path_rand_nearest[-1]
@@ -333,7 +342,6 @@ if mode == "planner":
 
         return node_list
     map = np.load("map.npy")
-    map = np.rot90(map, 3)
     
     plt.imshow(map, cmap='gray')
     plt.title("Map")
@@ -350,7 +358,7 @@ if mode == "planner":
     # plt.show()
 
     # Part 2.3 continuation: Call path_planner
-    waypoints = rrt_star(state_bounds, state_is_valid, start, end, deltaq)
+    waypoints = rrt_star(convolved_map, state_is_valid, start, end, 500, np.linalg.norm(convolved_map/10.))
 
     # Part 2.4: Turn paths into waypoints and save on disk as path.npy and visualize it
     path_points = []  # normal path
@@ -363,6 +371,10 @@ if mode == "planner":
     # y_coords, x_coords = zip(*waypoints)
     # plt.plot(x_coords, y_coords, color='red', linewidth=1)
     # plt.show()
+    path_points = []  # normal path
+    for point in waypoints:
+        path_points.append((12 * (point[1] / -360), (12 * point[0] / -360)+0.3))
+    np.save("path.npy", path_points)
 
 
 
