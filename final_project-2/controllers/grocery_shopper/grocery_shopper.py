@@ -1,4 +1,4 @@
-"""""grocery controller."""
+"""grocery controller."""
 
 # Apr 1, 2025
 
@@ -8,10 +8,14 @@ import numpy as np
 from iterative_closest_point import icp_matching
 import matplotlib.pyplot as plt
 import os
+import torch
+import cv2
+from scipy.signal import convolve2d
 import random
-from scipy.signal import convolve2d # Uncomment if you want to use something else for finding the configuration space
-from ikpy.chain import Chain
-from ikpy.link import OriginLink, URDFLink
+from ultralytics import YOLO
+
+
+
 
 
 #Initialization
@@ -66,6 +70,13 @@ right_gripper_enc.enable(timestep)
 camera = robot.getDevice('camera')
 camera.enable(timestep)
 # camera.recognitionEnable(timestep)
+width = camera.getWidth()
+height = camera.getHeight()
+
+# Load your trained YOLOv5 model
+model = YOLO("best.pt")
+model.conf = 0.5  # confidence threshold
+model.iou = 0.4   # IOU threshold for NMS
 
 # Enable GPS and compass localization
 gps = robot.getDevice("gps")
@@ -92,6 +103,13 @@ pose_theta = 0
 vL = 0
 vR = 0
 
+# MODE = 'map'
+# MODE = 'planner'
+MODE = 'navigation'
+
+
+HEIGHT = 914
+WIDTH = 494
 SCALE = 30
 
 map_size = (30, 16)  # meters
@@ -101,18 +119,32 @@ grid_height = int(map_size[1] * SCALE)
 occupancy_grid = np.zeros((grid_width, grid_height))
 # occupancy_grid = np.zeros((300, 300))
 lidar_offsets = np.linspace(-LIDAR_ANGLE_RANGE/2., +LIDAR_ANGLE_RANGE/2., LIDAR_ANGLE_BINS)
-# lidar_offsets = lidar_offsets[50:len(lidar_offsets)-50] #provides clearest image
 
-def get_pose(gps, compass): #webots provided pose, CHANGE
-    x_r = gps.getValues()[0]
-    y_r = gps.getValues()[1]
-    theta_r = np.arctan2(compass.getValues()[0], compass.getValues()[1])
-    return x_r, -y_r, theta_r
 
-def rotate(ranges, angles): #rotate angles appropriately
-    xs = ranges * np.cos(angles)
-    ys = ranges * np.sin(angles)
-    return np.vstack((xs, ys))
+def odometry():
+    dt = timestep/1000
+
+    vL = vL / MAX_SPEED * MAX_SPEED_MS
+    vR = vR / MAX_SPEED * MAX_SPEED_MS
+
+    dist_left = vL * dt
+    dist_right = vR * dt
+    # print(f'DIST_RIGHT {dist_right} DIST_LEFT {dist_left}')
+
+    dist = (dist_right + dist_left) * 0.5
+    theta = (dist_right - dist_left) / AXLE_LENGTH
+
+    pose_x += dist * math.cos(pose_theta)
+    pose_y += dist * math.sin(pose_theta)
+
+    pose_theta += theta
+
+    if pose_theta > math.pi:
+        pose_theta -= 2 * math.pi
+    elif pose_theta < -math.pi:
+        pose_theta += 2 * math.pi
+
+    return pose_x, pose_y, pose_theta
 
 
 def to_pixels(x, y):
@@ -163,32 +195,6 @@ def line_algo(x0, y0, x1, y1): #bresenham's line algorithm
             err += dx
             y0 += s_inc
 
-TURN_THRESHOLD = 0.05  # Allowable threshold for turning (in radians)
-
-# Previous pose (to detect change in orientation)
-last_pose_theta = 0
-
-# Function to check if the robot is turning
-def is_turning(pose_theta, last_pose_theta):
-    if last_pose_theta is None:
-        return False  # First step, no turning yet
-    delta_theta = abs(pose_theta - last_pose_theta)
-    return delta_theta > TURN_THRESHOLD  # Significant turn if delta exceeds threshold
-
-# ------------------------------------------------------------------
-# Helper Functions
-
-poses = []  #list of (x, y, theta)
-scans = []  #list of LIDAR
-last_scan = None
-last_pose = None
-
-gripper_status="closed"
-STEP = 100
-step = 0
-mode = "planner"
-
-
 def get_distance_helper(point1,point2):
     return np.linalg.norm(np.array(point1) - np.array(point2))
 
@@ -226,16 +232,19 @@ def steer(from_point, to_point, delta_q):
     if(distance > delta_q):
         direction = (to_point-from_point)/distance
         new_to_point = delta_q*direction+from_point
-        return np.linspace(from_point,new_to_point,num=10)
+        line = np.linspace(from_point, new_to_point, num=10)
     else:
-        return np.linspace(from_point,to_point,num=10)
+        line = np.linspace(from_point, to_point, num=10)
+
+    # Convert to list of tuples of ints
+    return [np.array((int(p[0]), int(p[1]))) for p in line]
     
 def get_random_valid_vertex(state_valid, convolved_map):
     vertex = None
     while vertex is None: # Get starting vertex
-        random_x = np.random.rand() * grid_width
-        random_y = np.random.rand() * grid_height
-        pt = (random_x,random_y)
+        random_x = np.random.randint(0,WIDTH)
+        random_y = np.random.randint(0,HEIGHT)
+        pt = np.array((random_x,random_y))
         if state_valid(pt, convolved_map):
             vertex = pt
     return vertex
@@ -249,26 +258,68 @@ def near(node_list,q_new,r):
     return near_list
 
 def state_is_valid(pt,convolved_map):
-    if 0 <= pt[0] < grid_width:
-        if 0 <= pt[1] < grid_height:
-            if(convolved_map[pt[0]][pt[1]] == 0):
-                return True
-                
+    x = int(pt[0])
+    y = int(pt[1])
+    if 0 <= x < WIDTH:
+        if 0 <= y < HEIGHT:
+            if(convolved_map[y,x] == 0):
+                return True           
     return False
+
+def visualize_2D_graph(convolved_map, nodes, goal_point=None, filename=None):
+        fig = plt.figure()
+        plt.xlim(0,WIDTH)
+        plt.ylim(0,HEIGHT)
+
+        goal_node = None
+        for node in nodes:
+            if node.parent is not None:
+                node_path = np.array(node.path_from_parent)
+                plt.plot(node_path[:,0], node_path[:,1], '-b')
+            if goal_point is not None and np.linalg.norm(node.point - np.array(goal_point)) <= 1e-5:
+                goal_node = node
+                plt.plot(node.point[0], node.point[1], 'k^')
+            else:
+                plt.plot(node.point[0], node.point[1], 'ro')
+
+        plt.plot(nodes[0].point[0], nodes[0].point[1], 'ko')
+
+        if goal_node is not None:
+            cur_node = goal_node
+            while cur_node is not None: 
+                if cur_node.parent is not None:
+                    node_path = np.array(cur_node.path_from_parent)
+                    plt.plot(node_path[:,0], node_path[:,1], '--y')
+                    cur_node = cur_node.parent
+                else:
+                    break
+
+        if goal_point is not None:
+            plt.plot(goal_point[0], goal_point[1], 'gx')
+
+
+        if filename is not None:
+            fig.savefig(filename)
+        else:
+            plt.show()
+
+
+
 #------ RRT Star Helper --------#
 
-if mode == "planner":
-    start_w = (-7.97232, -4.84369) # (Pose_X, Pose_Y) in meters CHANGE
-    end_w = (-2.20815, -8.84167) # (Pose_X, Pose_Y) in meters
+if MODE == "planner":
+    # start_w = (-7.97232, -4.84369) # (Pose_X, Pose_Y) in meters CHANGE
+    # end_w = (-2.20815, -8.84167) # (Pose_X, Pose_Y) in meters
 
-    # Convert the start_w and end_w from the webots coordinate frame into the map frame
+    # # Convert the start_w and end_w from the webots coordinate frame into the map frame
 
-    def world_to_map(coords):
-        return (abs(int(coords[0]*30)), abs(int(coords[1]*30)))
+    # def world_to_map(coords):
+    #     return (abs(int(coords[0]*30)), abs(int(coords[1]*30)))
 
-    start = world_to_map(start_w) # (x, y) in 360x360 map
-    end = world_to_map(end_w) # (x, y) in 360x360 map
-    print(start, end)
+    # start = world_to_map(start_w) # (x, y) in 360x360 map
+    # end = world_to_map(end_w) # (x, y) in 360x360 map
+    # print(start, end)
+
 
     class Node:
         def __init__(self, pt, parent=None):
@@ -278,7 +329,7 @@ if mode == "planner":
             
     def rrt_star(convolved_map, state_is_valid, starting_point, goal_point, k, delta_q):
    
-#   RRT* Pseudo Code CREDIT: https://www.ri.cmu.edu/pub_files/2014/9/TR-2013-JDG003.pdf
+    #   RRT* Pseudo Code CREDIT: https://www.ri.cmu.edu/pub_files/2014/9/TR-2013-JDG003.pdf
         node_list = []
         cost_list = {}
         first = Node(starting_point, parent=None)
@@ -295,7 +346,7 @@ if mode == "planner":
             q_new = path_rand_nearest[-1]
             valid = True
             for point in path_rand_nearest:
-                if not state_is_valid(point):
+                if state_is_valid(point,convolved_map) == False:
                     valid = False
             if valid:
                 new_node = Node(q_new,q_nearest)
@@ -312,7 +363,7 @@ if mode == "planner":
                         node_path = np.linspace(node.point,new_node.point,num = 10)
                         path_valid = True
                         for point in node_path:
-                            if not state_is_valid(point):
+                            if state_is_valid(point,convolved_map) == False:
                                 path_valid = False
                         if(path_valid):
                             q_min = node
@@ -327,7 +378,7 @@ if mode == "planner":
                         node_parent_path = np.linspace(new_node.point,node.point,num=10)
                         path_valid = True
                         for point in node_parent_path:
-                            if not state_is_valid(point):
+                            if state_is_valid(point,convolved_map) == False:
                                 path_valid = False
                         if(path_valid):
                             node.parent = new_node
@@ -338,153 +389,158 @@ if mode == "planner":
                 if(goal_point is not None):
                     distance_from_goal = get_distance_helper(new_node.point,goal_point)
                     if(distance_from_goal < 1e-5):
+                        print("Found the end!")
                         return node_list
-
+        
+        print(f"Did not find end, finished after {k} iterations.")
         return node_list
-    map = np.load("map.npy")
     
-    plt.imshow(map, cmap='gray')
-    plt.title("Map")
-    plt.axis('off')
-    plt.savefig("map_visualization.png")
+    #declare start and end and load map
+    start = np.array((20,20))
+    end = np.array((312,807))
+    map = np.load("map.npy")
+    map = map==3
    
-    # Part 2.2: Compute an approximation of the “configuration space”
-    KERNEL_DIM = 16
+    #Convolve map
+    KERNEL_DIM = 15
     kernel = np.ones(shape=[KERNEL_DIM, KERNEL_DIM])
     convolved_map = convolve2d(map, kernel)
     convolved_map = convolved_map > 0
     convolved_map = convolved_map * 1
-    # plt.imshow(convolved_map)
-    # plt.show()
+    height,width = convolved_map.shape
 
-    # Part 2.3 continuation: Call path_planner
-    waypoints = rrt_star(convolved_map, state_is_valid, start, end, 500, np.linalg.norm(convolved_map/10.))
+    #call path planner
+    waypoints_all = rrt_star(convolved_map, state_is_valid, start, end, 2000, 30)
+    
+    plt.imshow(convolved_map)
+    #UNCOMMENT TO SEE ALL POINTS IN RRT* 
+    # for waypt in waypoints_all:
+    #     #plt.plot(waypt.point[0], waypt.point[1], marker='o', color='blue', markersize=2) 
+    
+    #uncomment lines below to see all trees
+    goal_node = None
+    for node in waypoints_all:
+        if node.parent is not None:
+            node_path = np.array(node.path_from_parent)
+            #plt.plot(node_path[:,0], node_path[:,1], '-b')
+        if np.linalg.norm(node.point - np.array(end)) <= 1e-5:
+            goal_node = node
+            #plt.plot(node.point[0], node.point[1], 'k^')
+        # else:
+        #     plt.plot(node.point[0], node.point[1], 'ro')
 
-    # Part 2.4: Turn paths into waypoints and save on disk as path.npy and visualize it
-    path_points = []  # normal path
-    for point in waypoints:
-        path_points.append((12 * (point[1] / -360), (12 * point[0] / -360)+0.3))
-    np.save("path.npy", path_points)
+    plt.plot(waypoints_all[0].point[0], waypoints_all[0].point[1], 'ko')
 
-    # path_map = np.load("path.npy")
-    # plt.imshow(convolved_map)
-    # y_coords, x_coords = zip(*waypoints)
+    #waypoints for the path! 
+    path_waypoints = []
+
+    if goal_node is not None:
+        cur_node = goal_node
+        while cur_node is not None: 
+            if cur_node.parent is not None:
+                plt.plot(cur_node.point[0], cur_node.point[1], marker='o', color='blue', markersize=2)
+                path_waypoints.append(cur_node.point)
+                node_path = np.array(cur_node.path_from_parent)
+                plt.plot(node_path[:,0], node_path[:,1], '--y')
+                cur_node = cur_node.parent
+            else:
+                break
+
+    if goal_node is not None:
+        plt.plot(goal_node.point[0], goal_node.point[1], 'gx')
+    
+    print(path_waypoints)
+    
+    path_world_coords = []
+    for point in path_waypoints:
+        path_world_coords.append(((point[1]/30) - 15, (point[0] /30)-8.05))
+    np.save("path.npy", path_world_coords)
+    
+    print(path_world_coords)
+
+    path_map = np.load("path.npy")
+
+    # x_coords, y_coords = zip(*waypoints_points)
     # plt.plot(x_coords, y_coords, color='red', linewidth=1)
-    # plt.show()
-    path_points = []  # normal path
-    for point in waypoints:
-        path_points.append((12 * (point[1] / -360), (12 * point[0] / -360)+0.3))
-    np.save("path.npy", path_points)
+    plt.plot(start[0], start[1], marker='^', color='lightgreen', markersize=7)
+    plt.plot(end[0], end[1], marker='^', color='lightgreen', markersize=7)
+    plt.show()
+    visualize_2D_graph(convolved_map,waypoints_all,end,"test2.png")
+# ------------------------------------------------------------------
+# Helper Functions
 
-
-
+gripper_status="closed"
 
 # Main Loop
 while robot.step(timestep) != -1:
-    # print("Lidar max range:", lidar.getMaxRange())
-
-        
-    pose_x, pose_y, pose_theta = get_pose(gps, compass) #webots pose, CHANGE
-
-    # print(pose_x, pose_y, pose_theta)
+    pose_x, pose_y, pose_theta = odometry()
     lidar_values = np.array(lidar.getRangeImage())
 
-    # turning = is_turning(pose_theta, last_pose_theta)
-    # # turning = False
-    # if step == STEP:
-    #     last_pose_theta = pose_theta
-    #     step = 0
-    # else:
-    #     print(step)
-    #     step += 1
+    if MODE == 'map':
 
-    # if not turning:
+        # print(pose_x, pose_y, pose_theta)
+        pose_pixels = to_pixels(pose_x, pose_y)
+        occupancy_grid[pose_pixels[0]][pose_pixels[1]] = 2
+        robot_x, robot_y = to_pixels(pose_x, pose_y)
 
-    pose_pixels = to_pixels(pose_x, pose_y)
+        
 
-    occupancy_grid[pose_pixels[0]][pose_pixels[1]] = 2
+        for i in range(len(lidar_offsets)):
+            distance = lidar_values[i]
+            world_coords = to_world(i, lidar_values[i])
+            if world_coords is not None: #if distance is infinity world coords will be none
+                world_x, world_y = to_pixels(world_coords[0], world_coords[1])
 
-    robot_x, robot_y = to_pixels(pose_x, pose_y)
+        
+                if 0 <= world_x < grid_width and 0 <= world_y < grid_height:
+                    line_algo(robot_x, robot_y, world_x, world_y)
+                    if distance < 5 and distance > 0:
+                        occupancy_grid[world_x][world_y] = 3  
+        color_grid = np.zeros((grid_width, grid_height, 3), dtype=np.uint8)
 
+        color_grid[occupancy_grid == 1] = [255, 255, 255]  #free space = White
+        color_grid[occupancy_grid == 2] = [255, 0, 0]      #robot path = Red
+        color_grid[occupancy_grid == 3] = [0, 0, 255]      #obstacles = Blue
+        plt.clf()
+        plt.imshow(color_grid, origin="lower")
+        plt.draw() 
+        plt.pause(0.01)  
+
+        center_bin = LIDAR_ANGLE_BINS // 2
+        left_bin = int(center_bin - 100)
+        right_bin = int(center_bin + 100)
+
+        # # Thresholds for "clear"
+        forward_clear = lidar_values[center_bin] > 1.0
+
+        if forward_clear:
+            vL, vR = 10, 10  # move forward
+        else:
+            vL, vR = 1, -1  # if boxed in, turn right
+
+
+        robot_parts["wheel_left_joint"].setVelocity(vL)
+        robot_parts["wheel_right_joint"].setVelocity(vR)
+
+        file_path = os.path.join(os.getcwd(), "occupancy_grid.npy")
+        np.save(file_path, occupancy_grid)
+        print(f"Occupancy grid saved to {file_path}")
+    elif MODE == 'navigation':
+        img = camera.getImageArray()
+        img_np = np.array(img, dtype=np.uint8).reshape((height, width, 3))  #3 for RGB channels
+
+        img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR) #convert to BGR
+
+        results = model(img_bgr)[0]  #inference
+        detections = results.boxes.data.cpu().numpy()  #x1, y1, x2, y2, confidence, class
+        class_names = model.names
+
+        for det in detections:
+            x1, y1, x2, y2, conf, cls = det
+            label = class_names[int(cls)]
+            print(f"[DETECTION] {label} ({conf:.2f}) at [{int(x1)}, {int(y1)}, {int(x2)}, {int(y2)}]")
     
 
-    for i in range(len(lidar_offsets)):
-        distance = lidar_values[i]
-        world_coords = to_world(i, lidar_values[i])
-        if world_coords is not None: #if distance is infinity world coords will be none
-            # print("HIHIHI")
-            world_x, world_y = to_pixels(world_coords[0], world_coords[1])
-
-    
-            if 0 <= world_x < grid_width and 0 <= world_y < grid_height:
-                line_algo(robot_x, robot_y, world_x, world_y)
-                # print(f"[DEBUG] Marking map at ({world_x}, {world_y})")
-                # print(occupancy_grid[world_x][world_y])
-                if distance < 5 and distance > 0:
-                    occupancy_grid[world_x][world_y] = 3  
-
-
-    ##### Part 4: Draw the obstacle and free space pixels on the map
-    # for i, row in enumerate(occupancy_grid): #loop through 2x2 array representing the world and set display colors(sorry this makes it so slow)
-    #     for j, cell in enumerate(row):
-    #         if cell == 0: #black
-    #             display.setColor(0x000000)
-    #         elif cell == 1: #white
-    #             display.setColor(0xFFFFFF)
-    #         elif cell == 2: #red
-    #             print("AA")
-    #             display.setColor(0xFF0000)
-    #         elif cell == 3: #blue
-    #             display.setColor(0x0000FF)
-            
-    #         display.drawPixel(i, j)
-    color_grid = np.zeros((grid_width, grid_height, 3), dtype=np.uint8)
-    # print(color_grid)
-
-    color_grid[occupancy_grid == 1] = [255, 255, 255]  # Free space = White
-    color_grid[occupancy_grid == 2] = [255, 0, 0]      # Robot path = Red
-    color_grid[occupancy_grid == 3] = [0, 0, 255]      # Obstacles = Blue
-    # Unknown space remains black (0,0,0)
-    # print(color_grid[975][4499])
-    # print(color_grid[975-10:975+10, 4499-10:4499+10])
-    # plt.clf()
-    # plt.imshow(color_grid, origin="lower")
-    # plt.draw()  # Update the plot
-    # plt.pause(0.01)  # Keep the plot updated  
-
-
-    # plt.clf()
-    # plt.imshow(occupancy_grid, cmap="gray", origin="lower")
-    # plt.title("Occupancy Grid Map (30x16m)")
-    # plt.pause(0.01)
-    center_bin = LIDAR_ANGLE_BINS // 2
-    left_bin = int(center_bin - 100)
-    right_bin = int(center_bin + 100)
-
-    # # Thresholds for "clear"
-    forward_clear = lidar_values[center_bin] > 1.0
-    left_clear = lidar_values[left_bin] > 1.0
-    right_clear = lidar_values[right_bin] > 1.0
-
-    # Finite State Machine for obstacle avoidance
-    if forward_clear:
-        vL, vR = 10, 10  # move forward
-    # elif left_clear and not right_clear:
-    #     vL, vR = 2.5, -2.5  # turn left
-    # elif right_clear and not left_clear:
-    #     vL, vR = -2.5, 2.5  # turn right
-    # elif left_clear and right_clear:
-    #     vL, vR = 2.5, -2.5  # both sides open? turn left arbitrarily
-    else:
-        vL, vR = -1, 1  # if boxed in, turn right
-
-
-    robot_parts["wheel_left_joint"].setVelocity(vL)
-    robot_parts["wheel_right_joint"].setVelocity(vR)
-
-    file_path = os.path.join(os.getcwd(), "occupancy_grid.npy")
-    np.save(file_path, occupancy_grid)
-    print(f"[INFO] Occupancy grid saved to {file_path}")
     
     if(gripper_status=="open"):
         # Close gripper, note that this takes multiple time steps...
@@ -498,4 +554,11 @@ while robot.step(timestep) != -1:
         robot_parts["gripper_right_finger_joint"].setPosition(0.045)
         if left_gripper_enc.getValue()>=0.044:
             gripper_status="open"
+    
 
+
+
+if MODE == 'map':
+    file_path = os.path.join(os.getcwd(), "occupancy_grid.npy")
+    np.save(file_path, occupancy_grid)
+    print(f"[INFO] Occupancy grid saved to {file_path}")
