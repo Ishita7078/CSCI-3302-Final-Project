@@ -12,7 +12,9 @@ import cv2
 from scipy.signal import convolve2d
 import random
 from ultralytics import YOLO
+import builtins
 
+from controller import Supervisor # TODO: remove
 
 #Initialization
 print("=== Initializing Grocery Shopper...")
@@ -26,12 +28,14 @@ N_PARTS = 12
 LIDAR_ANGLE_BINS = 667
 LIDAR_SENSOR_MAX_RANGE = 5.5 # Meters
 LIDAR_ANGLE_RANGE = math.radians(240)
-print(LIDAR_ANGLE_BINS)
+# print(LIDAR_ANGLE_BINS)
 lidar_offsets = np.linspace(-LIDAR_ANGLE_RANGE / 2., LIDAR_ANGLE_RANGE / 2., LIDAR_ANGLE_BINS)
 # lidar_offsets = lidar_offsets[::-1]
 
 # create the Robot instance.
-robot = Robot()
+robot = Supervisor()
+marker = robot.getFromDef("marker").getField("translation") # TODO: remove
+trans_field = robot.getSelf().getField("translation") # TODO: remove
 
 # get the time step of the current world.
 timestep = int(robot.getBasicTimeStep())
@@ -92,7 +96,7 @@ keyboard = robot.getKeyboard()
 keyboard.enable(timestep)
 
 # Odometry
-pose_x     = 0
+pose_x     = -5
 pose_y     = 0
 pose_theta = 0
 
@@ -115,6 +119,79 @@ grid_height = int(map_size[1] * SCALE)
 occupancy_grid = np.zeros((grid_width, grid_height))
 # occupancy_grid = np.zeros((300, 300))
 lidar_offsets = np.linspace(-LIDAR_ANGLE_RANGE/2., +LIDAR_ANGLE_RANGE/2., LIDAR_ANGLE_BINS)
+
+def filter(waypoints, min_distance):
+    # Filters a list of waypoints to be min_distance apart
+    filtered = [waypoints[0]]
+    for i in builtins.range(1, len(waypoints)):
+        distance = position_error(filtered[-1][0], filtered[-1][1], waypoints[i][0], waypoints[i][1])
+        if distance >= min_distance:
+            filtered.append(waypoints[i])
+    return filtered
+
+
+def position_error(current_x, current_y, goal_x, goal_y):
+    return math.sqrt((goal_x - current_x)**2 + (goal_y - current_y)**2)
+
+
+def bearing_error(current_x, current_y, current_theta, goal_x, goal_y):
+    y = goal_y - current_y
+    x = goal_x - current_x
+    alpha = math.atan2(y, x)
+    alpha -= current_theta
+    alpha = (alpha + math.pi) % (2 * math.pi) - math.pi
+    return alpha + math.pi/2
+
+
+def heading_error(current_theta, goal_theta):
+    eta = goal_theta - current_theta
+    eta = (eta + math.pi) % (2 * math.pi) - math.pi
+    return eta + math.pi/2
+
+
+def ik_controller(vL, vR, x_i, y_i, pose_x, pose_y, pose_theta, waypoints, index):
+    # print(pose_x, pose_y, pose_theta)
+
+    # STEP 1: Calculate the error
+    pose_theta += math.pi * 0.5
+    rho = position_error(pose_x, pose_y, waypoints[index][0], waypoints[index][1])
+    alpha = bearing_error(pose_x, pose_y, pose_theta, waypoints[index][0], waypoints[index][1])
+    theta_g = math.atan2(waypoints[index][1] - y_i, waypoints[index][0] - x_i)
+    eta = heading_error(pose_theta, theta_g)
+    print(f"rho: {rho}, alpha: {alpha}, eta: {eta}")
+    # STEP 2: Controller
+    velocity = 0.09 * rho
+    angular = 0.06 * alpha + 0.03 * eta
+    if rho < 0.2:
+        x_i = waypoints[index][0]
+        y_i = waypoints[index][1]
+        index += 1
+    else:
+        vL = (velocity - (angular * AXLE_LENGTH * 0.5)) / (0.02)
+        vR = (velocity + (angular * AXLE_LENGTH * 0.5)) / (0.02)
+        lsign = 1 if vL > 0 else -1
+        rsign = 1 if vR > 0 else -1
+        ratio = abs(vL / vR)
+        if abs(vL) > MAX_SPEED or abs(vR) > MAX_SPEED:
+            if ratio > 1:
+                vL = MAX_SPEED * lsign
+                vR = MAX_SPEED / ratio * rsign
+            else:
+                vL = MAX_SPEED * ratio * lsign
+                vR = MAX_SPEED * rsign
+        if abs(abs(vL / vR) - ratio) > 1e-10: exit()
+        if alpha < -0.09:
+            vL = (2)
+            vR = (-2)
+        elif alpha > 0.09:
+            vL = (-2)
+            vR = (2)
+
+    if vL != 2 and vL != -2: vL = (vL / MAX_SPEED) * 2
+    if vR != 2 and vR != -2: vR = (vR / MAX_SPEED) * 2
+
+    print(f"vL: {vL}, vR: {vR}")
+    return vL, vR, x_i, y_i, index
 
 
 def odometry():
@@ -451,14 +528,14 @@ if MODE == "planner":
     if goal_node is not None:
         plt.plot(goal_node.point[0], goal_node.point[1], 'gx')
     
-    print(path_waypoints)
+    # print(path_waypoints)
     
     path_world_coords = []
     for point in path_waypoints:
         path_world_coords.append(((point[1]/30) - 15, (point[0] /30)-8.05))
     np.save("path.npy", path_world_coords)
     
-    print(path_world_coords)
+    # print(path_world_coords)
 
     path_map = np.load("path.npy")
 
@@ -472,10 +549,22 @@ if MODE == "planner":
 # Helper Functions
 
 gripper_status="closed"
+aisle_path = [(-4.83, 5.82),(13.15, 5.82),(13.15,2.18),(-4.83,2.18),(-4.83,-1.82),(13.15,-1.82),(13.15,-5.91),(-4.83,-5.91)]
+# aisle_path_px = []
+# for pos in aisle_path:
+#     aisle_path_px.append(to_pixels(pos[0],pos[1]))
+
+# Tiago Starting position
+y_i = 0
+x_i = -5
+
+state = 0 # use this to iterate through your path
+
 
 # Main Loop
-while robot.step(timestep) != -1:
-    pose_x, pose_y, pose_theta = odometry()
+while robot.step(timestep) != -1 and MODE != 'planner':
+    # pose_x, pose_y, pose_theta = odometry()
+    # print(pose_x, pose_y, pose_theta)
     lidar_values = np.array(lidar.getRangeImage())
 
     if MODE == 'map':
@@ -528,19 +617,43 @@ while robot.step(timestep) != -1:
         np.save(file_path, occupancy_grid)
         print(f"Occupancy grid saved to {file_path}")
     elif MODE == 'navigation':
-        img = camera.getImageArray()
-        img_np = np.array(img, dtype=np.uint8).reshape((height, width, 3))  #3 for RGB channels
+        marker.setSFVec3f([aisle_path[state][0], aisle_path[state][1], 2.4]) # TODO: remove
 
-        img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR) #convert to BGR
+        values = trans_field.getSFVec3f()
+        pose_x = values[0]
+        pose_y = values[1]
+        n = compass.getValues()
+        pose_theta = math.atan2(n[0], n[1])
+        # TODO: remove ^^^^^^^^^
+        print(pose_x, pose_y, pose_theta)
 
-        results = model(img_bgr)[0]  #inference
-        detections = results.boxes.data.cpu().numpy()  #x1, y1, x2, y2, confidence, class
-        class_names = model.names
+        # img = camera.getImageArray()
+        # img_np = np.array(img, dtype=np.uint8).reshape((height, width, 3))  #3 for RGB channels
+        #
+        # img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR) #convert to BGR
+        #
+        # results = model(img_bgr)[0]  #inference
+        # detections = results.boxes.data.cpu().numpy()  #x1, y1, x2, y2, confidence, class
+        # class_names = model.names
 
-        for det in detections:
-            x1, y1, x2, y2, conf, cls = det
-            label = class_names[int(cls)]
-            print(f"[DETECTION] {label} ({conf:.2f}) at [{int(x1)}, {int(y1)}, {int(x2)}, {int(y2)}]")
+        # if True or detections is None:
+        if True:
+            # task = go to next point in aisle path, no rrt star since just straight lines with no obstacles?
+            # may run face-first into walls after picking up an object
+            if state != len(aisle_path):
+                vL, vR, x_i, y_i, state = ik_controller(vL, vR, x_i, y_i, pose_x, pose_y, pose_theta, aisle_path, state)
+            else:
+                vL = 0
+                vR = 0
+            pass
+        else:
+            # task = rrt star to first cube in detection list, pick it up, all those other things
+            pass
+
+        # for det in detections:
+        #     x1, y1, x2, y2, conf, cls = det
+        #     label = class_names[int(cls)]
+        #     print(f"[DETECTION] {label} ({conf:.2f}) at [{int(x1)}, {int(y1)}, {int(x2)}, {int(y2)}]")
 
 
     # if(gripper_status=="open"):
@@ -555,6 +668,10 @@ while robot.step(timestep) != -1:
     #     robot_parts["gripper_right_finger_joint"].setPosition(0.045)
     #     if left_gripper_enc.getValue()>=0.044:
     #         gripper_status="open"
+
+        # Actuator commands
+        robot_parts["wheel_left_joint"].setVelocity(vL)
+        robot_parts["wheel_right_joint"].setVelocity(vR)
     
 
 if MODE == 'map':
