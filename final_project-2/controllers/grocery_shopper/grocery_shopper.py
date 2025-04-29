@@ -223,8 +223,18 @@ def odometry():
 
 def to_pixels(x, y):
    return int((x + 15) * SCALE), int((y + 8.05) * SCALE)
-    
-  
+
+
+def to_pixels_proper(x,y):
+    ''' Unused but more accurate pixel conversion '''
+    x = int((x + map_size[0]/2) / map_size[0] * HEIGHT)
+    y = int((y + map_size[1]/2) / map_size[1] * WIDTH)
+    return x,y
+
+def from_pixels(x, y):
+    return x / SCALE -15, y / SCALE - 8.05
+
+
 def to_world(bin, distance):
     global pose_x, pose_y, pose_theta  
     if distance != float('inf') and distance > 0 and distance < 5:
@@ -269,6 +279,12 @@ def line_algo(x0, y0, x1, y1): #bresenham's line algorithm
             err += dx
             y0 += s_inc
 
+class Node:
+    def __init__(self, pt, parent=None):
+        self.point = pt  # n-Dimensional point
+        self.parent = parent  # Parent node
+        self.path_from_parent = []  # List of points along the way from the parent node (for visualization)
+
 
 def get_distance_helper(point1,point2):
     return np.linalg.norm(np.array(point1) - np.array(point2))
@@ -284,7 +300,7 @@ def get_nearest_vertex(node_list, q_point):
     closest_vertex = None
     for node in node_list:
         if closest_vertex==None:
-            closest_vertex = node   
+            closest_vertex = node
         else:
             node_distance = get_distance_helper(q_point, node.point)
             current_closest_distance = get_distance_helper(q_point, closest_vertex.point)
@@ -331,10 +347,9 @@ def near(node_list,q_new,r):
     near_list = []
     for node in node_list:
         distance = get_distance_helper(node.point,q_new)
-        if(distance <=r): 
+        if(distance <=r):
             near_list.append(node)
     return near_list
-
 
 def state_is_valid(pt,convolved_map):
     x = int(pt[0])
@@ -342,8 +357,75 @@ def state_is_valid(pt,convolved_map):
     if 0 <= x < WIDTH:
         if 0 <= y < HEIGHT:
             if(convolved_map[y,x] == 0):
-                return True           
+                return True
     return False
+
+def rrt_star(convolved_map, state_is_valid, starting_point, goal_point, k, delta_q):
+    #   RRT* Pseudo Code CREDIT: https://www.ri.cmu.edu/pub_files/2014/9/TR-2013-JDG003.pdf
+    node_list = []
+    cost_list = {}
+    first = Node(starting_point, parent=None)
+    node_list.append(first)  # Add Node at starting point with no parent
+    cost_list.update({tuple(first.point): 0})
+    rad = delta_q * 1.5
+    for i in range(1, k):
+        if goal_point is not None and random.random() < 0.05:
+            q_rand = goal_point
+        else:
+            q_rand = get_random_valid_vertex(state_is_valid, convolved_map)
+        q_nearest = get_nearest_vertex(node_list, q_rand)
+        path_rand_nearest = steer(q_nearest.point, q_rand, delta_q)
+        q_new = path_rand_nearest[-1]
+        valid = True
+        for point in path_rand_nearest:
+            if state_is_valid(point, convolved_map) == False:
+                valid = False
+        if valid:
+            new_node = Node(q_new, q_nearest)
+            new_node.path_from_parent = path_rand_nearest
+            node_list.append(new_node)
+            node_cost = cost_list[tuple(new_node.parent.point)] + get_distance_helper(new_node.point,
+                                                                                      new_node.parent.point)
+            cost_list.update({tuple(new_node.point): node_cost})
+            q_near_list = near(node_list, new_node.point, rad)
+            q_min = q_nearest
+            c_min = cost_list.get(tuple(q_nearest.point)) + get_distance_helper(q_nearest.point, new_node.point)
+            for node in q_near_list:
+                near_node_cost = cost_list[tuple(node.point)] + get_distance_helper(node.point, new_node.point)
+                if (near_node_cost < c_min):
+                    node_path = np.linspace(node.point, new_node.point, num=10)
+                    path_valid = True
+                    for point in node_path:
+                        if state_is_valid(point, convolved_map) == False:
+                            path_valid = False
+                    if (path_valid):
+                        q_min = node
+                        c_min = near_node_cost
+            new_node.parent = q_min
+            new_node.path_from_parent = np.linspace(new_node.parent.point, new_node.point, num=10)
+            cost_list[tuple(new_node.point)] = c_min
+            for node in q_near_list:
+                c_near = cost_list[tuple(node.point)]
+                c_new = cost_list[(tuple(new_node.point))] + get_distance_helper(node.point, new_node.point)
+                if (c_new < c_near):
+                    node_parent_path = np.linspace(new_node.point, node.point, num=10)
+                    path_valid = True
+                    for point in node_parent_path:
+                        if state_is_valid(point, convolved_map) == False:
+                            path_valid = False
+                    if (path_valid):
+                        node.parent = new_node
+                        node.path_from_parent = np.linspace(new_node.point, node.point, num=10)
+                        cost_list[tuple(node.point)] = c_new
+
+            if (goal_point is not None):
+                distance_from_goal = get_distance_helper(new_node.point, goal_point)
+                if (distance_from_goal < 1e-5):
+                    print("Found the end!")
+                    return node_list
+
+    print(f"Did not find end, finished after {k} iterations.")
+    return node_list
 
 
 def visualize_2D_graph(convolved_map, nodes, goal_point=None, filename=None):
@@ -366,7 +448,7 @@ def visualize_2D_graph(convolved_map, nodes, goal_point=None, filename=None):
 
         if goal_node is not None:
             cur_node = goal_node
-            while cur_node is not None: 
+            while cur_node is not None:
                 if cur_node.parent is not None:
                     node_path = np.array(cur_node.path_from_parent)
                     plt.plot(node_path[:,0], node_path[:,1], '--y')
@@ -399,87 +481,12 @@ if MODE == "planner":
     # end = world_to_map(end_w) # (x, y) in 360x360 map
     # print(start, end)
 
-
-    class Node:
-        def __init__(self, pt, parent=None):
-                self.point = pt # n-Dimensional point
-                self.parent = parent # Parent node
-                self.path_from_parent = [] # List of points along the way from the parent node (for visualization)
-            
-    def rrt_star(convolved_map, state_is_valid, starting_point, goal_point, k, delta_q):
-   
-    #   RRT* Pseudo Code CREDIT: https://www.ri.cmu.edu/pub_files/2014/9/TR-2013-JDG003.pdf
-        node_list = []
-        cost_list = {}
-        first = Node(starting_point, parent=None)
-        node_list.append(first) # Add Node at starting point with no parent
-        cost_list.update({tuple(first.point):0})
-        rad = delta_q*1.5
-        for i in range(1,k):
-            if goal_point is not None and random.random() < 0.05: 
-                q_rand = goal_point
-            else:
-                q_rand = get_random_valid_vertex(state_is_valid,convolved_map)
-            q_nearest = get_nearest_vertex(node_list,q_rand)
-            path_rand_nearest= steer(q_nearest.point,q_rand,delta_q)
-            q_new = path_rand_nearest[-1]
-            valid = True
-            for point in path_rand_nearest:
-                if state_is_valid(point,convolved_map) == False:
-                    valid = False
-            if valid:
-                new_node = Node(q_new,q_nearest)
-                new_node.path_from_parent = path_rand_nearest
-                node_list.append(new_node)
-                node_cost = cost_list[tuple(new_node.parent.point)]+ get_distance_helper(new_node.point, new_node.parent.point)
-                cost_list.update({tuple(new_node.point):node_cost})
-                q_near_list = near(node_list,new_node.point,rad)
-                q_min = q_nearest
-                c_min = cost_list.get(tuple(q_nearest.point)) + get_distance_helper(q_nearest.point,new_node.point)
-                for node in q_near_list:
-                    near_node_cost = cost_list[tuple(node.point)] + get_distance_helper(node.point,new_node.point)
-                    if(near_node_cost<c_min):
-                        node_path = np.linspace(node.point,new_node.point,num = 10)
-                        path_valid = True
-                        for point in node_path:
-                            if state_is_valid(point,convolved_map) == False:
-                                path_valid = False
-                        if(path_valid):
-                            q_min = node
-                            c_min = near_node_cost
-                new_node.parent = q_min
-                new_node.path_from_parent = np.linspace(new_node.parent.point,new_node.point,num = 10)
-                cost_list[tuple(new_node.point)] = c_min
-                for node in q_near_list:
-                    c_near = cost_list[tuple(node.point)]
-                    c_new = cost_list[(tuple(new_node.point))] + get_distance_helper(node.point,new_node.point)
-                    if(c_new < c_near): 
-                        node_parent_path = np.linspace(new_node.point,node.point,num=10)
-                        path_valid = True
-                        for point in node_parent_path:
-                            if state_is_valid(point,convolved_map) == False:
-                                path_valid = False
-                        if(path_valid):
-                            node.parent = new_node
-                            node.path_from_parent = np.linspace(new_node.point,node.point,num=10)
-                            cost_list[tuple(node.point)] = c_new
-                            
-
-                if(goal_point is not None):
-                    distance_from_goal = get_distance_helper(new_node.point,goal_point)
-                    if(distance_from_goal < 1e-5):
-                        print("Found the end!")
-                        return node_list
-        
-        print(f"Did not find end, finished after {k} iterations.")
-        return node_list
-    
     #declare start and end and load map
     start = np.array((20,20))
     end = np.array((312,807))
     map = np.load("map.npy")
     map = map==3
-   
+
     #Convolve map
     KERNEL_DIM = 15
     kernel = np.ones(shape=[KERNEL_DIM, KERNEL_DIM])
@@ -487,15 +494,16 @@ if MODE == "planner":
     convolved_map = convolved_map > 0
     convolved_map = convolved_map * 1
     height,width = convolved_map.shape
+    np.save("convolved_map.npy", convolved_map)
 
     #call path planner
     waypoints_all = rrt_star(convolved_map, state_is_valid, start, end, 2000, 30)
-    
+
     plt.imshow(convolved_map)
-    #UNCOMMENT TO SEE ALL POINTS IN RRT* 
+    #UNCOMMENT TO SEE ALL POINTS IN RRT*
     # for waypt in waypoints_all:
-    #     #plt.plot(waypt.point[0], waypt.point[1], marker='o', color='blue', markersize=2) 
-    
+    #     #plt.plot(waypt.point[0], waypt.point[1], marker='o', color='blue', markersize=2)
+
     #uncomment lines below to see all trees
     goal_node = None
     for node in waypoints_all:
@@ -510,12 +518,12 @@ if MODE == "planner":
 
     plt.plot(waypoints_all[0].point[0], waypoints_all[0].point[1], 'ko')
 
-    #waypoints for the path! 
+    #waypoints for the path!
     path_waypoints = []
 
     if goal_node is not None:
         cur_node = goal_node
-        while cur_node is not None: 
+        while cur_node is not None:
             if cur_node.parent is not None:
                 plt.plot(cur_node.point[0], cur_node.point[1], marker='o', color='blue', markersize=2)
                 path_waypoints.append(cur_node.point)
@@ -527,14 +535,14 @@ if MODE == "planner":
 
     if goal_node is not None:
         plt.plot(goal_node.point[0], goal_node.point[1], 'gx')
-    
+
     # print(path_waypoints)
-    
+
     path_world_coords = []
     for point in path_waypoints:
         path_world_coords.append(((point[1]/30) - 15, (point[0] /30)-8.05))
     np.save("path.npy", path_world_coords)
-    
+
     # print(path_world_coords)
 
     path_map = np.load("path.npy")
@@ -542,7 +550,7 @@ if MODE == "planner":
     # x_coords, y_coords = zip(*waypoints_points)
     # plt.plot(x_coords, y_coords, color='red', linewidth=1)
     plt.plot(start[0], start[1], marker='^', color='lightgreen', markersize=7)
-    plt.plot(end[0], end[1], marker='^', color='lightgreen', markersize=7)
+    plt.plot(end[0], end[1], marker='^', color='red', markersize=7)
     plt.show()
     visualize_2D_graph(convolved_map,waypoints_all,end,"test2.png")
 # ------------------------------------------------------------------
@@ -559,7 +567,13 @@ y_i = 0
 x_i = -5
 
 state = 0 # use this to iterate through your path
+aisle_state = -1
+current_path = []
 
+cmap = np.load("convolved_map.npy")
+print(f"shape: {cmap.shape}")
+# plt.imshow(cmap)
+# plt.show()
 
 # Main Loop
 while robot.step(timestep) != -1 and MODE != 'planner':
@@ -574,7 +588,7 @@ while robot.step(timestep) != -1 and MODE != 'planner':
         occupancy_grid[pose_pixels[0]][pose_pixels[1]] = 2
         robot_x, robot_y = to_pixels(pose_x, pose_y)
 
-        
+
 
         for i in range(len(lidar_offsets)):
             distance = lidar_values[i]
@@ -582,11 +596,11 @@ while robot.step(timestep) != -1 and MODE != 'planner':
             if world_coords is not None: #if distance is infinity world coords will be none
                 world_x, world_y = to_pixels(world_coords[0], world_coords[1])
 
-        
+
                 if 0 <= world_x < grid_width and 0 <= world_y < grid_height:
                     line_algo(robot_x, robot_y, world_x, world_y)
                     if distance < 5 and distance > 0:
-                        occupancy_grid[world_x][world_y] = 3  
+                        occupancy_grid[world_x][world_y] = 3
         color_grid = np.zeros((grid_width, grid_height, 3), dtype=np.uint8)
 
         color_grid[occupancy_grid == 1] = [255, 255, 255]  #free space = White
@@ -594,8 +608,8 @@ while robot.step(timestep) != -1 and MODE != 'planner':
         color_grid[occupancy_grid == 3] = [0, 0, 255]      #obstacles = Blue
         plt.clf()
         plt.imshow(color_grid, origin="lower")
-        plt.draw() 
-        plt.pause(0.01)  
+        plt.draw()
+        plt.pause(0.01)
 
         center_bin = LIDAR_ANGLE_BINS // 2
         left_bin = int(center_bin - 100)
@@ -617,7 +631,8 @@ while robot.step(timestep) != -1 and MODE != 'planner':
         np.save(file_path, occupancy_grid)
         print(f"Occupancy grid saved to {file_path}")
     elif MODE == 'navigation':
-        marker.setSFVec3f([aisle_path[state][0], aisle_path[state][1], 2.4]) # TODO: remove
+        if current_path and len(current_path) > state:
+            marker.setSFVec3f([current_path[state][0], current_path[state][1], 2.4]) # TODO: remove
 
         values = trans_field.getSFVec3f()
         pose_x = values[0]
@@ -636,16 +651,69 @@ while robot.step(timestep) != -1 and MODE != 'planner':
         # detections = results.boxes.data.cpu().numpy()  #x1, y1, x2, y2, confidence, class
         # class_names = model.names
 
-        # if True or detections is None:
+        # if detections is None:
         if True:
             # task = go to next point in aisle path, no rrt star since just straight lines with no obstacles?
             # may run face-first into walls after picking up an object
-            if state != len(aisle_path):
-                vL, vR, x_i, y_i, state = ik_controller(vL, vR, x_i, y_i, pose_x, pose_y, pose_theta, aisle_path, state)
+            # if prev_state != state:
+            # prev_state = state
+            if state != len(current_path):
+                print(state, current_path)
+                # TODO: maybe problem if state doesnt increase before generating new path
+                vL, vR, x_i, y_i, state = ik_controller(vL, vR, x_i, y_i, pose_x, pose_y, pose_theta, current_path, state)
             else:
+                # End of current path reached
                 vL = 0
                 vR = 0
-            pass
+                # Generate path to next point in the aisle path
+                aisle_state += 1
+                print(f"Generating new path from {(round(pose_x,2), round(pose_y,2))} to {aisle_path[aisle_state]}")
+                start = to_pixels(pose_x, pose_y)
+                start = np.array((start[1],start[0]))
+                end = to_pixels(aisle_path[aisle_state][0], aisle_path[aisle_state][1])
+                end = np.array((end[1],end[0]))
+                print(start, end)
+                waypoints_all = rrt_star(cmap, state_is_valid, start, end, 1000, 15)
+                plt.imshow(cmap)
+                # uncomment lines below to see all trees
+                goal_node = None
+                for node in waypoints_all:
+                    if node.parent is not None:
+                        node_path = np.array(node.path_from_parent)
+                        # plt.plot(node_path[:,0], node_path[:,1], '-b')
+                    if np.linalg.norm(node.point - np.array(end)) <= 1e-5:
+                        goal_node = node
+                        # plt.plot(node.point[0], node.point[1], 'k^')
+                    # else:
+                    #     plt.plot(node.point[0], node.point[1], 'ro')
+
+                plt.plot(waypoints_all[0].point[0], waypoints_all[0].point[1], 'ko')
+
+                # waypoints for the path!
+                path_waypoints = []
+
+                if goal_node is not None:
+                    cur_node = goal_node
+                    while cur_node is not None:
+                        if cur_node.parent is not None:
+                            plt.plot(cur_node.point[0], cur_node.point[1], marker='o', color='blue', markersize=2)
+                            path_waypoints.append(cur_node.point)
+                            node_path = np.array(cur_node.path_from_parent)
+                            plt.plot(node_path[:, 0], node_path[:, 1], '--y')
+                            cur_node = cur_node.parent
+                        else:
+                            break
+
+                if goal_node is not None:
+                    plt.plot(goal_node.point[0], goal_node.point[1], 'gx')
+                # print(path_waypoints)
+
+                path_world_coords = []
+                for point in reversed(path_waypoints):
+                    path_world_coords.append(from_pixels(point[1], point[0]))
+                current_path = path_world_coords
+                # print(current_path)
+                plt.show()
         else:
             # task = rrt star to first cube in detection list, pick it up, all those other things
             pass
