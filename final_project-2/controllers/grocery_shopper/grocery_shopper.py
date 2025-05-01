@@ -673,7 +673,7 @@ while robot.step(timestep) != -1 and MODE != 'planner':
                 end = to_pixels(aisle_path[aisle_state][0], aisle_path[aisle_state][1])
                 end = np.array((end[1],end[0]))
                 print(start, end)
-                waypoints_all = rrt_star(cmap, state_is_valid, start, end, 1000, 15)
+                waypoints_all = rrt_star(cmap, state_is_valid, start, end, 1000, 10)
                 plt.imshow(cmap)
                 # uncomment lines below to see all trees
                 goal_node = None
@@ -712,6 +712,8 @@ while robot.step(timestep) != -1 and MODE != 'planner':
                 for point in reversed(path_waypoints):
                     path_world_coords.append(from_pixels(point[1], point[0]))
                 current_path = path_world_coords
+                current_path = filter(current_path, 1)
+                current_path.append(path_world_coords[-1])
                 # print(current_path)
                 plt.show()
         else:
