@@ -2,7 +2,7 @@
 
 # Apr 1, 2025
 
-from controller import Robot
+from controller import Robot, Motor, Camera, RangeFinder, Lidar, Keyboard
 import math
 import numpy as np
 import matplotlib.pyplot as plt
@@ -13,6 +13,9 @@ from scipy.signal import convolve2d
 import random
 from ultralytics import YOLO
 import builtins
+from ikpy.chain import Chain
+from ikpy.link import OriginLink, URDFLink
+from ikpy.utils import geometry
 
 from controller import Supervisor # TODO: remove
 
@@ -40,31 +43,41 @@ trans_field = robot.getSelf().getField("translation") # TODO: remove
 # get the time step of the current world.
 timestep = int(robot.getBasicTimeStep())
 
-
-
 # The Tiago robot has multiple motors, each identified by their names below
 part_names = ("head_2_joint", "head_1_joint", "torso_lift_joint", "arm_1_joint",
               "arm_2_joint",  "arm_3_joint",  "arm_4_joint",      "arm_5_joint",
-              "arm_6_joint",  "arm_7_joint",  "wheel_left_joint", "wheel_right_joint",
-              "gripper_left_finger_joint","gripper_right_finger_joint")
+              "arm_6_joint",  "arm_7_joint",  "wheel_left_joint", "wheel_right_joint")
 
-# 
+base_elements=["base_link", "base_link_Torso_joint", "Torso", "torso_lift_joint", "torso_lift_link", "torso_lift_link_TIAGo front arm_11367_joint", "TIAGo front arm_11367"]
+my_chain = Chain.from_urdf_file("robot_urdf.urdf", base_elements=["base_link", "base_link_Torso_joint", "Torso", "torso_lift_joint", "torso_lift_link", "torso_lift_link_TIAGo front arm_11367_joint", "TIAGo front arm_11367"])
+
+my_chain.active_links_mask = [False] * len(my_chain.links)
+
+for link_id in builtins.range(len(my_chain.links)):
+    # This is the actual link object
+    link = my_chain.links[link_id]
+
+    # I've disabled "torso_lift_joint" manually as it can cause
+    # the TIAGO to become unstable.
+    if hasattr(link, 'joint_type') and (link.joint_type == 'revolute' or link.name == "gripper_right_finger_joint"):
+        my_chain.active_links_mask[link_id] = True
+    else:
+    # if link.name not in part_names or link.name == "torso_lift_joint":
+        print("Disabling {}".format(link.name))
+        my_chain.active_links_mask[link_id] = False
+#
+# print(my_chain.links)
+# print(my_chain.active_links_mask)
 
 # All motors except the wheels are controlled by position control. The wheels
 # are controlled by a velocity controller. We therefore set their position to infinite.
-target_pos = (0.0, 0.0, 0.35, 0.07, 1.02, -3.16, 1.27, 1.32, 0.0, 1.41, 'inf', 'inf',0.045,0.045)
+target_pos = (0.0, 0.0, 0.09, 0.07, 1.02, -3.16, 1.27, 1.32, 0.0, 1.41, 'inf', 'inf')
+robot_parts=[]
 
-robot_parts={}
-for i, part_name in enumerate(part_names):
-    robot_parts[part_name]=robot.getDevice(part_name)
-    robot_parts[part_name].setPosition(float(target_pos[i]))
-    robot_parts[part_name].setVelocity(robot_parts[part_name].getMaxVelocity() / 2.0)
-
-# Enable gripper encoders (position sensors)
-left_gripper_enc=robot.getDevice("gripper_left_finger_joint_sensor")
-right_gripper_enc=robot.getDevice("gripper_right_finger_joint_sensor")
-left_gripper_enc.enable(timestep)
-right_gripper_enc.enable(timestep)
+for i in range(N_PARTS):
+    robot_parts.append(robot.getDevice(part_names[i]))
+    robot_parts[i].setPosition(float(target_pos[i]))
+    robot_parts[i].setVelocity(robot_parts[i].getMaxVelocity() / 2.0)
 
 # Enable Camera
 camera = robot.getDevice('camera')
@@ -106,6 +119,25 @@ vR = 0
 # MODE = 'map'
 # MODE = 'planner'
 MODE = 'navigation'
+
+vrb = False # Verbose print in joint helper functions
+
+# Initialize the arm motors and encoders.
+motors = []
+for link in my_chain.links:
+    if link.name in part_names and link.name != "torso_lift_joint":
+        motor = robot.getDevice(link.name)
+
+        # Make sure to account for any motors that
+        # require a different maximum velocity!
+        if link.name == "torso_lift_joint":
+            motor.setVelocity(0.07)
+        else:
+            motor.setVelocity(1)
+
+        position_sensor = motor.getPositionSensor()
+        position_sensor.enable(timestep)
+        motors.append(motor)
 
 
 HEIGHT = 914
@@ -464,6 +496,152 @@ def visualize_2D_graph(convolved_map, nodes, goal_point=None, filename=None):
             fig.savefig(filename)
         else:
             plt.show()
+# ------------------------------------------------------------------
+# Joint Helper Functions
+# ------------------------------------------------------------------
+def rotate_y(x, y, z, theta):
+    new_x = x * np.cos(theta) + y * np.sin(theta)
+    new_z = z
+    new_y = y * -np.sin(theta) + x * np.cos(theta)
+    return [-new_x, new_y, new_z]
+
+def checkArmAtPosition(ikResults, cutoff=0.00005):
+    # '''Checks if arm at position, given ikResults'''
+
+    # Get the initial position of the motors
+    initial_position = [0, 0, 0, 0] + [m.getPositionSensor().getValue() for m in motors] + [0, 0, 0, 0]
+
+    # Calculate the arm
+    arm_error = 0
+    for item in builtins.range(14):
+        arm_error += (initial_position[item] - ikResults[item]) ** 2
+    arm_error = math.sqrt(arm_error)
+
+    if arm_error < cutoff:
+        if vrb:
+            print("Arm at position.")
+        return True
+    return False
+
+
+def moveArmToTarget(ikResults):
+    # '''Moves arm given ikResults'''
+    # Set the robot motors
+    for res in builtins.range(len(ikResults)):
+        if my_chain.links[res].name in part_names:
+            # This code was used to wait for the trunk, but now unnecessary.
+            # if abs(initial_position[2]-ikResults[2]) < 0.1 or res == 2:
+            robot.getDevice(my_chain.links[res].name).setPosition(ikResults[res])
+            if vrb:
+                print("Setting {} to {}".format(my_chain.links[res].name, ikResults[res]))
+
+
+def calculateIk(target_position, target_orientation=None):
+    if target_orientation is None:
+        target_frame = geometry.to_transformation_matrix(target_position)
+    else:
+        target_frame = geometry.orientations_to_transformation_matrix(target_position, target_orientation)
+
+    active_bounds = [link.bounds for i, link in enumerate(my_chain.links) if my_chain.active_links_mask[i]]
+    lower_bounds = np.array([b[0] for b in active_bounds])
+    upper_bounds = np.array([b[1] for b in active_bounds])
+
+    initial_guess = []
+    for i, link in enumerate(my_chain.links):
+        if my_chain.active_links_mask[i]:
+            lower, upper = link.bounds
+            if lower != -np.inf and upper != np.inf:
+                initial_guess.append((lower + upper) / 2.0)
+            else:
+                initial_guess.append(0.0)
+        else:
+            initial_guess.append(0.0)
+
+    initial_guess = np.array(initial_guess)
+    ik_result = my_chain.inverse_kinematics(target_position=target_position, initial_position=initial_guess)
+
+    return ik_result
+
+
+def getTargetFromObject(recognized_objects):
+    # ''' Gets a target vector from a list of recognized objects '''
+
+    # Get the first valid target
+    target = recognized_objects[0].get_position()
+
+    # Convert camera coordinates to IK/Robot coordinates
+    # offset_target = [-(target[2])+0.22, -target[0]+0.08, (target[1])+0.97+0.2]
+    offset_target = [-(target[2]) + 0.22, -target[0] + 0.06, (target[1]) + 0.97 + 0.2]
+
+    return offset_target
+
+
+def reachArm(target, previous_target, ikResults, cutoff=0.00005):
+    # '''
+    # This code is used to reach the arm over an object and pick it up.
+    # '''
+
+    # Calculate the error using the ikTarget
+    error = 0
+    ikTargetCopy = previous_target
+
+    # Make sure ikTarget is defined
+    if previous_target is None:
+        error = 100
+    else:
+        for item in builtins.range(3):
+            error += (target[item] - previous_target[item]) ** 2
+        error = math.sqrt(error)
+
+    # If error greater than margin
+    if error > 0.05:
+        print("Recalculating IK, error too high {}...".format(error))
+        ikResults = calculateIk(target)
+        ikTargetCopy = target
+        moveArmToTarget(ikResults)
+
+    # Exit Condition
+    if checkArmAtPosition(ikResults, cutoff=cutoff):
+        if vrb:
+            print("NOW SWIPING")
+        return [True, ikTargetCopy, ikResults]
+    else:
+        if vrb:
+            print("ARM NOT AT POSITION")
+
+    # Return ikResults
+    return [False, ikTargetCopy, ikResults]
+
+
+def closeGrip():
+    robot.getDevice("gripper_right_finger_joint").setPosition(0.0)
+    robot.getDevice("gripper_left_finger_joint").setPosition(0.0)
+
+    # r_error = abs(robot.getDevice("gripper_right_finger_joint").getPositionSensor().getValue() - 0.01)
+    # l_error = abs(robot.getDevice("gripper_left_finger_joint").getPositionSensor().getValue() - 0.01)
+
+    # print("ERRORS")
+    # print(r_error)
+    # print(l_error)
+
+    # if r_error+l_error > 0.0001:
+    #     return False
+    # else:
+    #     return True
+
+
+def openGrip():
+    robot.getDevice("gripper_right_finger_joint").setPosition(0.045)
+    robot.getDevice("gripper_left_finger_joint").setPosition(0.045)
+
+    # r_error = abs(robot.getDevice("gripper_right_finger_joint").getPositionSensor().getValue() - 0.045)
+    # l_error = abs(robot.getDevice("gripper_left_finger_joint").getPositionSensor().getValue() - 0.045)
+
+    # if r_error+l_error > 0.0001:
+    #     return False
+    # else:
+    #     return True
+
 
 
 #------ RRT Star Helper --------#
@@ -556,7 +734,6 @@ if MODE == "planner":
 # ------------------------------------------------------------------
 # Helper Functions
 
-gripper_status="closed"
 aisle_path = [(-4.83, 5.82),(13.15, 5.82),(13.15,2.18),(-4.83,2.18),(-4.83,-1.82),(13.15,-1.82),(13.15,-5.91),(-4.83,-5.91)]
 # aisle_path_px = []
 # for pos in aisle_path:
@@ -569,11 +746,15 @@ x_i = -5
 state = 0 # use this to iterate through your path
 aisle_state = -1
 current_path = []
+ARM_STATE = 0
 
 cmap = np.load("convolved_map.npy")
-print(f"shape: {cmap.shape}")
+# print(f"shape: {cmap.shape}")
 # plt.imshow(cmap)
 # plt.show()
+
+ikTop = calculateIk((0, 1, 1))
+moveArmToTarget(ikTop)
 
 # Main Loop
 while robot.step(timestep) != -1 and MODE != 'planner':
@@ -624,8 +805,8 @@ while robot.step(timestep) != -1 and MODE != 'planner':
             vL, vR = 1, -1  # if boxed in, turn right
 
 
-        robot_parts["wheel_left_joint"].setVelocity(vL)
-        robot_parts["wheel_right_joint"].setVelocity(vR)
+        robot_parts[MOTOR_LEFT].setVelocity(vL)
+        robot_parts[MOTOR_RIGHT].setVelocity(vR)
 
         file_path = os.path.join(os.getcwd(), "occupancy_grid.npy")
         np.save(file_path, occupancy_grid)
@@ -642,17 +823,17 @@ while robot.step(timestep) != -1 and MODE != 'planner':
         # TODO: remove ^^^^^^^^^
         print(pose_x, pose_y, pose_theta)
 
-        # img = camera.getImageArray()
-        # img_np = np.array(img, dtype=np.uint8).reshape((height, width, 3))  #3 for RGB channels
-        #
-        # img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR) #convert to BGR
-        #
-        # results = model(img_bgr)[0]  #inference
-        # detections = results.boxes.data.cpu().numpy()  #x1, y1, x2, y2, confidence, class
-        # class_names = model.names
+        img = camera.getImageArray()
+        img_np = np.array(img, dtype=np.uint8).reshape((height, width, 3))  #3 for RGB channels
 
-        # if detections is None:
-        if True:
+        img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR) #convert to BGR
+
+        results = model(img_bgr)[0]  #inference
+        detections = results.boxes.data.cpu().numpy()  #x1, y1, x2, y2, confidence, class
+        class_names = model.names
+
+        if detections is None:
+        # if True:
             # task = go to next point in aisle path, no rrt star since just straight lines with no obstacles?
             # may run face-first into walls after picking up an object
             # if prev_state != state:
@@ -718,12 +899,18 @@ while robot.step(timestep) != -1 and MODE != 'planner':
                 plt.show()
         else:
             # task = rrt star to first cube in detection list, pick it up, all those other things
+            vL = 0
+            vR = 0
+            for det in detections:
+                x1, y1, x2, y2, conf, cls = det
+                if conf > 0.8:
+                    if ARM_STATE == 0:
+
+                        ARM_STATE = 1
+                    label = class_names[int(cls)]
+                    print(f"[DETECTION] {label} ({conf:.2f}) at [{int(x1)}, {int(y1)}, {int(x2)}, {int(y2)}], W {x2-x1}, H {y2-y1}")
             pass
 
-        # for det in detections:
-        #     x1, y1, x2, y2, conf, cls = det
-        #     label = class_names[int(cls)]
-        #     print(f"[DETECTION] {label} ({conf:.2f}) at [{int(x1)}, {int(y1)}, {int(x2)}, {int(y2)}]")
 
 
     # if(gripper_status=="open"):
@@ -740,8 +927,8 @@ while robot.step(timestep) != -1 and MODE != 'planner':
     #         gripper_status="open"
 
         # Actuator commands
-        robot_parts["wheel_left_joint"].setVelocity(vL)
-        robot_parts["wheel_right_joint"].setVelocity(vR)
+        robot_parts[MOTOR_LEFT].setVelocity(vL)
+        robot_parts[MOTOR_RIGHT].setVelocity(vR)
     
 
 if MODE == 'map':
