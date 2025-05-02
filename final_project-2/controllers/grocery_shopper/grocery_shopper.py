@@ -190,7 +190,7 @@ def ik_controller(vL, vR, x_i, y_i, pose_x, pose_y, pose_theta, waypoints, index
     alpha = bearing_error(pose_x, pose_y, pose_theta, waypoints[index][0], waypoints[index][1])
     theta_g = math.atan2(waypoints[index][1] - y_i, waypoints[index][0] - x_i)
     eta = heading_error(pose_theta, theta_g)
-    print(f"rho: {rho}, alpha: {alpha}, eta: {eta}")
+    # print(f"rho: {rho}, alpha: {alpha}, eta: {eta}")
     # STEP 2: Controller
     velocity = 0.09 * rho
     angular = 0.06 * alpha + 0.03 * eta
@@ -222,7 +222,7 @@ def ik_controller(vL, vR, x_i, y_i, pose_x, pose_y, pose_theta, waypoints, index
     if vL != 2 and vL != -2: vL = (vL / MAX_SPEED) * 2
     if vR != 2 and vR != -2: vR = (vR / MAX_SPEED) * 2
 
-    print(f"vL: {vL}, vR: {vR}")
+    # print(f"vL: {vL}, vR: {vR}")
     return vL, vR, x_i, y_i, index
 
 
@@ -536,16 +536,7 @@ def moveArmToTarget(ikResults):
                 print("Setting {} to {}".format(my_chain.links[res].name, ikResults[res]))
 
 
-def calculateIk(target_position, target_orientation=None):
-    if target_orientation is None:
-        target_frame = geometry.to_transformation_matrix(target_position)
-    else:
-        target_frame = geometry.orientations_to_transformation_matrix(target_position, target_orientation)
-
-    active_bounds = [link.bounds for i, link in enumerate(my_chain.links) if my_chain.active_links_mask[i]]
-    lower_bounds = np.array([b[0] for b in active_bounds])
-    upper_bounds = np.array([b[1] for b in active_bounds])
-
+def calculateIk(target_position, target_orientation=None, orientation_mode=None):
     initial_guess = []
     for i, link in enumerate(my_chain.links):
         if my_chain.active_links_mask[i]:
@@ -556,11 +547,15 @@ def calculateIk(target_position, target_orientation=None):
                 initial_guess.append(0.0)
         else:
             initial_guess.append(0.0)
-
     initial_guess = np.array(initial_guess)
-    ik_result = my_chain.inverse_kinematics(target_position=target_position, initial_position=initial_guess)
-
+    ik_result = my_chain.inverse_kinematics(
+        target_position=np.array(target_position),
+        target_orientation=target_orientation,
+        orientation_mode=orientation_mode,
+        initial_position=initial_guess
+    )
     return ik_result
+
 
 
 def getTargetFromObject(recognized_objects):
@@ -747,14 +742,18 @@ state = 0 # use this to iterate through your path
 aisle_state = -1
 current_path = []
 ARM_STATE = 0
+wait_timer = 0
+
+UPPER_SHELF = 1.02
+LOWER_SHELF = 0.6
 
 cmap = np.load("convolved_map.npy")
 # print(f"shape: {cmap.shape}")
 # plt.imshow(cmap)
 # plt.show()
 
-ikTop = calculateIk((0, 1, 1))
-moveArmToTarget(ikTop)
+armTop = (0,0,2)
+armTopIk = calculateIk(armTop)
 
 # Main Loop
 while robot.step(timestep) != -1 and MODE != 'planner':
@@ -821,19 +820,19 @@ while robot.step(timestep) != -1 and MODE != 'planner':
         n = compass.getValues()
         pose_theta = math.atan2(n[0], n[1])
         # TODO: remove ^^^^^^^^^
-        print(pose_x, pose_y, pose_theta)
+        # print(pose_x, pose_y, pose_theta)
 
-        img = camera.getImageArray()
-        img_np = np.array(img, dtype=np.uint8).reshape((height, width, 3))  #3 for RGB channels
+        # img = camera.getImageArray()
+        # img_np = np.array(img, dtype=np.uint8).reshape((height, width, 3))  #3 for RGB channels
+        #
+        # img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR) #convert to BGR
+        #
+        # results = model(img_bgr)[0]  #inference
+        # detections = results.boxes.data.cpu().numpy()  #x1, y1, x2, y2, confidence, class
+        # class_names = model.names
 
-        img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR) #convert to BGR
-
-        results = model(img_bgr)[0]  #inference
-        detections = results.boxes.data.cpu().numpy()  #x1, y1, x2, y2, confidence, class
-        class_names = model.names
-
-        if detections is None:
-        # if True:
+        # if detections is None:
+        if False:
             # task = go to next point in aisle path, no rrt star since just straight lines with no obstacles?
             # may run face-first into walls after picking up an object
             # if prev_state != state:
@@ -901,14 +900,31 @@ while robot.step(timestep) != -1 and MODE != 'planner':
             # task = rrt star to first cube in detection list, pick it up, all those other things
             vL = 0
             vR = 0
-            for det in detections:
-                x1, y1, x2, y2, conf, cls = det
-                if conf > 0.8:
-                    if ARM_STATE == 0:
-
-                        ARM_STATE = 1
-                    label = class_names[int(cls)]
-                    print(f"[DETECTION] {label} ({conf:.2f}) at [{int(x1)}, {int(y1)}, {int(x2)}, {int(y2)}], W {x2-x1}, H {y2-y1}")
+            if ARM_STATE == 0:
+                moveArmToTarget(armTopIk)
+                ARM_STATE = 1
+                wait_timer = 0
+            if ARM_STATE == 1:
+                if wait_timer > 200:
+                    armForwardIk = calculateIk((0.5,0,UPPER_SHELF),target_orientation=np.array([-1, 0, 0]),orientation_mode="Z")
+                    moveArmToTarget(armForwardIk)
+                    openGrip()
+                    ARM_STATE = 2
+                    wait_timer = 0
+                else:
+                    wait_timer += 1
+            if ARM_STATE == 2:
+                if wait_timer > 200:
+                    armCubeIk = calculateIk((0.7,0,UPPER_SHELF+0.1),target_orientation=np.array([-1, 0.7, 0]),orientation_mode="Z")
+                    moveArmToTarget(armCubeIk)
+                    ARM_STATE = 3
+                else:
+                    wait_timer += 1
+            # for det in detections:
+            #     x1, y1, x2, y2, conf, cls = det
+            #     if conf > 0.8:
+            #         label = class_names[int(cls)]
+            #         print(f"[DETECTION] {label} ({conf:.2f}) at [{int(x1)}, {int(y1)}, {int(x2)}, {int(y2)}], W {x2-x1}, H {y2-y1}")
             pass
 
 
