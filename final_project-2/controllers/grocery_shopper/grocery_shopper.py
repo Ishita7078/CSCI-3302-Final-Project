@@ -43,6 +43,19 @@ trans_field = robot.getSelf().getField("translation") # TODO: remove
 # get the time step of the current world.
 timestep = int(robot.getBasicTimeStep())
 
+# Get the position sensor for the left wheel
+left_wheel_sensor = robot.getDevice('wheel_left_joint_sensor')
+# Enable the sensor with a sampling period of 'timestep'
+left_wheel_sensor.enable(timestep)
+
+# Get the position sensor for the left wheel
+right_wheel_sensor = robot.getDevice('wheel_right_joint_sensor')
+# Enable the sensor with a sampling period of 'timestep'
+right_wheel_sensor.enable(timestep)
+
+prev_left_position = left_wheel_sensor.getValue()
+prev_right_position = right_wheel_sensor.getValue()
+
 # The Tiago robot has multiple motors, each identified by their names below
 part_names = ("head_2_joint", "head_1_joint", "torso_lift_joint", "arm_1_joint",
               "arm_2_joint",  "arm_3_joint",  "arm_4_joint",      "arm_5_joint",
@@ -110,8 +123,14 @@ keyboard.enable(timestep)
 
 # Odometry
 pose_x     = -5
-pose_y     = 0
+pose_y     = -5
 pose_theta = 0
+
+# Odometry
+pose_x_test     = -5
+pose_y_test    = -5
+pose_theta_test = 0
+print(pose_x_test,pose_y_test,pose_theta_test)
 
 vL = 0
 vR = 0
@@ -227,30 +246,41 @@ def ik_controller(vL, vR, x_i, y_i, pose_x, pose_y, pose_theta, waypoints, index
 
 
 def odometry():
-    global vL, vR, pose_x, pose_y, pose_theta
+    global vL, vR, pose_x_test, pose_y_test, pose_theta_test, prev_left_position, prev_right_position, left_wheel_sensor, right_wheel_sensor
+    radius = .0982
     dt = timestep/1000
+    position_left = left_wheel_sensor.getValue()
+    position_right = right_wheel_sensor.getValue()
+    print("pos right")
+    print(position_right)
+    print("pos left")
+    print(position_left)
+    print("prev pos right")
+    print(prev_right_position)
+    print("prev pos left")
+    print(prev_left_position)
+    # radius = MAX_SPEED_MS / MAX_SPEED
 
-    vL = vL / MAX_SPEED * MAX_SPEED_MS
-    vR = vR / MAX_SPEED * MAX_SPEED_MS
+    change_in_left_wheel = (position_left - prev_left_position)
+    change_in_right_wheel = (position_right - prev_right_position)
 
-    dist_left = vL * dt
-    dist_right = vR * dt
-    # print(f'DIST_RIGHT {dist_right} DIST_LEFT {dist_left}')
+    dist_left = change_in_left_wheel * radius
+    dist_right = change_in_right_wheel * radius
 
     dist = (dist_right + dist_left) * 0.5
-    theta = (dist_right - dist_left) / AXLE_LENGTH
+    theta = (dist_right - dist_left) / AXLE_LENGTH 
 
-    pose_x += dist * math.cos(pose_theta)
-    pose_y += dist * math.sin(pose_theta)
+    pose_x_test += dist * math.cos(pose_theta_test) 
+    pose_y_test += dist * math.sin(pose_theta_test)
 
-    pose_theta += theta
+    pose_theta_test += theta
+    pose_theta_test = (pose_theta_test + math.pi) % (2 * math.pi) - math.pi 
 
-    if pose_theta > math.pi:
-        pose_theta -= 2 * math.pi
-    elif pose_theta < -math.pi:
-        pose_theta += 2 * math.pi
-
-    return pose_x, pose_y, pose_theta
+    print("ODOM")
+    print(pose_x_test,pose_y_test,pose_theta_test)
+    prev_left_position = position_left
+    prev_right_position = position_right
+    return pose_x_test, pose_y_test, pose_theta_test
 
 
 def to_pixels(x, y):
@@ -758,7 +788,21 @@ armTopIk = calculateIk(armTop)
 
 # Main Loop
 while robot.step(timestep) != -1 and MODE != 'planner':
-    # pose_x, pose_y, pose_theta = odometry()
+
+    # ###################
+    # left = left_wheel_sensor.getValue()
+    # right = right_wheel_sensor.getValue()
+    # vL = 2
+    # vR = 2
+    # print(MAX_SPEED_MS/MAX_SPEED)
+    # robot_parts[MOTOR_LEFT].setVelocity(vL)
+    # robot_parts[MOTOR_RIGHT].setVelocity(vR)
+    # print(f"Left wheel position: {left}, Right wheel position: {right}")
+    # continue
+    # ###################
+
+
+    pose_x_test, pose_y_test, pose_theta_test = odometry()
     # print(pose_x, pose_y, pose_theta)
     lidar_values = np.array(lidar.getRangeImage())
 
@@ -820,21 +864,25 @@ while robot.step(timestep) != -1 and MODE != 'planner':
         pose_y = values[1]
         n = compass.getValues()
         pose_theta = math.atan2(n[0], n[1])
+
+        print("POSE REAL YEAH")
+        print(pose_x,pose_y,pose_theta)
         # TODO: remove ^^^^^^^^^
         # print(pose_x, pose_y, pose_theta)
 
-        detections = None
-        if TASK != "grab_cube":
-            img = camera.getImageArray()
-            img_np = np.array(img, dtype=np.uint8).reshape((height, width, 3))  #3 for RGB channels
+        # detections = None
+        # if TASK != "grab_cube":
+        #     img = camera.getImageArray()
+        #     img_np = np.array(img, dtype=np.uint8).reshape((height, width, 3))  #3 for RGB channels
 
-            img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR) #convert to BGR
+        #     img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR) #convert to BGR
 
-            results = model(img_bgr)[0]  #inference
-            detections = results.boxes.data.cpu().numpy()  #x1, y1, x2, y2, confidence, class
-            class_names = model.names
+        #     results = model(img_bgr)[0]  #inference
+        #     detections = results.boxes.data.cpu().numpy()  #x1, y1, x2, y2, confidence, class
+        #     class_names = model.names
 
-        if detections is None and TASK != "grab_cube":
+        # if detections is None and TASK != "grab_cube":
+        if True:
             # task = go to next point in aisle path, no rrt star since just straight lines with no obstacles?
             # may run face-first into walls after picking up an object
             # if prev_state != state:
