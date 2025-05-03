@@ -152,6 +152,16 @@ occupancy_grid = np.zeros((grid_width, grid_height))
 # occupancy_grid = np.zeros((300, 300))
 lidar_offsets = np.linspace(-LIDAR_ANGLE_RANGE/2., +LIDAR_ANGLE_RANGE/2., LIDAR_ANGLE_BINS)
 
+wait_timer = 0
+def stalled_for(timesteps):
+    global wait_timer
+    if wait_timer > timesteps:
+        wait_timer = 0
+        return True
+    else:
+        wait_timer += 1
+        return False
+
 def filter(waypoints, min_distance):
     # Filters a list of waypoints to be min_distance apart
     filtered = [waypoints[0]]
@@ -729,7 +739,7 @@ if MODE == "planner":
 # ------------------------------------------------------------------
 # Helper Functions
 
-aisle_path = [(-4.83, 5.82),(13.15, 5.82),(13.15,2.18),(-4.83,2.18),(-4.83,-1.82),(13.15,-1.82),(13.15,-5.91),(-4.83,-5.91)]
+aisle_path = [(-4.83, 5.82),(3.41, 5.82),(13.15, 5.82),(13.15,2.18),(3.41,2.18),(-4.83,2.18),(-4.83,-1.82),(3.41,-1.82),(13.15,-1.82),(13.15,-5.91),(3.41,-5.91),(-4.83,-5.91)]
 # aisle_path_px = []
 # for pos in aisle_path:
 #     aisle_path_px.append(to_pixels(pos[0],pos[1]))
@@ -742,9 +752,13 @@ state = 0 # use this to iterate through your path
 aisle_state = -1
 current_path = []
 ARM_STATE = 0
-wait_timer = 0
+
+arm_path = []
+arm_index = 0
+
 TASK = "follow_aisle"
 detection_timer = 0
+cube_bounds = None
 
 UPPER_SHELF = 1.02
 LOWER_SHELF = 0.6
@@ -826,7 +840,7 @@ while robot.step(timestep) != -1 and MODE != 'planner':
 
         detections = []
         if TASK != "grab_cube":
-            if detection_timer > 20 or TASK == "go_to_cube": # Only check for detections every 20 timesteps, laggy
+            if detection_timer > 10 or TASK == "go_to_cube": # Only check for detections every 10 timesteps, laggy
                 detection_timer = 0
                 img = camera.getImageArray()
                 img_np = np.array(img, dtype=np.uint8).reshape((height, width, 3))  #3 for RGB channels
@@ -846,8 +860,7 @@ while robot.step(timestep) != -1 and MODE != 'planner':
             if conf > 0.8 and (x2-x1) > 4 and (y2-y1) > 4: # Confident it is a nearby cube
                 label = class_names[int(cls)]
                 if label == "yellow":
-                    print(
-                        f"[DETECTION] {label} ({conf:.2f}) at [{int(x1)}, {int(y1)}, {int(x2)}, {int(y2)}], W {x2 - x1}, H {y2 - y1}")
+                    print(f"[DETECTION] {label} ({conf:.2f}) at [{int(x1)}, {int(y1)}, {int(x2)}, {int(y2)}], W {x2 - x1}, H {y2 - y1}")
                     filtered_detections.append(det)
         detections = filtered_detections
 
@@ -941,10 +954,14 @@ while robot.step(timestep) != -1 and MODE != 'planner':
                         vR = (1)
                     else: # Object in center
                         # Go forward
-                        if lidar_values[center_bin] > 1:
+                        if lidar_values[center_bin] > 1.02:
                             print("forward")
                             vL = (1)
                             vR = (1)
+                        elif lidar_values[center_bin] < 0.98:
+                            print("backward")
+                            vL = (-1)
+                            vR = (-1)
                         else:
                             # Stop at wall
                             vL = 0
@@ -952,36 +969,52 @@ while robot.step(timestep) != -1 and MODE != 'planner':
                             # Reach for cube
                             print("reaching")
                             TASK = "grab_cube"
+                            cube_bounds = [x1, y1, x2, y2]
                 else: # Detections is None
                     # Continue with previous wheel speeds until cube is seen again
                     print(f"DDDDDDDDDDDDDDDDDDDDDDDDDetections {detections}, {TASK}")
 
             else: # Grab cube
+                if cube_bounds is None:
+                    print("Error: reaching for undefined cube!")
                 if ARM_STATE == 0:
                     moveArmToTarget(armTopIk)
-                    ARM_STATE = 1
+                    ARM_STATE = "go_to_shelf"
                     wait_timer = 0
-                if ARM_STATE == 1:
-                    if wait_timer > 150:
-                        # if avg height is > threshold UPPER SHELF else LOWER SHELF
-                        # Reach forward distance based on object size and compass angle? size is bigger if looking at corner than face and upper vs lower shelf
-                        FORWARD_DISTANCE = 0.5
-                        armForwardIk = calculateIk((FORWARD_DISTANCE,0,UPPER_SHELF),target_orientation=np.array([-1, 0, 0]),orientation_mode="Z")
-                        moveArmToTarget(armForwardIk)
+                if ARM_STATE == "go_to_shelf":
+                    if stalled_for(150):
+                        x1, y1, x2, y2 = cube_bounds
+                        shelf = UPPER_SHELF
+                        if (y1 + y2) / 2 > 90:
+                            shelf = LOWER_SHELF
+                        shelfIk = calculateIk((0.4, 0, shelf))
+                        moveArmToTarget(shelfIk)
                         openGrip()
-                        ARM_STATE = "reaching_forward"
-                        wait_timer = 0
-                    else:
-                        wait_timer += 1
+                        ARM_STATE = "follow_arm_path"
+                        # Reach forward distance based on object size and compass angle? size is bigger if looking at corner than face and upper vs lower shelf
+                        FORWARD_DISTANCE = 0.8
+                        arm_linspace = np.linspace(np.array([0.4, 0]), np.array([FORWARD_DISTANCE, 0]), 10)
+                        for point in arm_linspace:
+                            arm_path.append((point[0], point[1], shelf))
+                if ARM_STATE == "follow_arm_path":
+                    if stalled_for(150):
+                        if arm_index >= len(arm_path):
+                            ARM_STATE = "reaching_forward"
+                            arm_index = 0
+                        else:
+                            print(arm_path[arm_index])
+                            armForwardIk = calculateIk(arm_path[arm_index])  # target_orientation=np.array([-1, 0, 0]),orientation_mode="Z"
+                            moveArmToTarget(armForwardIk)
+                            arm_index += 1
                 if ARM_STATE == "reaching_forward":
-                    if wait_timer > 150:
+                    if stalled_for(150):
                         ARM_STATE = "done"
-                    else:
-                        wait_timer += 1
                 if ARM_STATE == "done":
                     print("DONE!")
+                    exit()
                     ARM_STATE = 0
                     TASK = "follow_aisle"
+                    cube_bounds = None
                 #     if wait_timer > 200:
                 #         armCubeIk = calculateIk((0.7,0,UPPER_SHELF+0.1),target_orientation=np.array([-1, 0.7, 0]),orientation_mode="Z")
                 #         moveArmToTarget(armCubeIk)
