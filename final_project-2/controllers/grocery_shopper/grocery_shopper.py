@@ -743,6 +743,7 @@ aisle_state = -1
 current_path = []
 ARM_STATE = 0
 wait_timer = 0
+TASK = "follow_aisle"
 
 UPPER_SHELF = 1.02
 LOWER_SHELF = 0.6
@@ -822,17 +823,18 @@ while robot.step(timestep) != -1 and MODE != 'planner':
         # TODO: remove ^^^^^^^^^
         # print(pose_x, pose_y, pose_theta)
 
-        # img = camera.getImageArray()
-        # img_np = np.array(img, dtype=np.uint8).reshape((height, width, 3))  #3 for RGB channels
-        #
-        # img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR) #convert to BGR
-        #
-        # results = model(img_bgr)[0]  #inference
-        # detections = results.boxes.data.cpu().numpy()  #x1, y1, x2, y2, confidence, class
-        # class_names = model.names
+        detections = None
+        if TASK != "grab_cube":
+            img = camera.getImageArray()
+            img_np = np.array(img, dtype=np.uint8).reshape((height, width, 3))  #3 for RGB channels
 
-        # if detections is None:
-        if False:
+            img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR) #convert to BGR
+
+            results = model(img_bgr)[0]  #inference
+            detections = results.boxes.data.cpu().numpy()  #x1, y1, x2, y2, confidence, class
+            class_names = model.names
+
+        if detections is None and TASK != "grab_cube":
             # task = go to next point in aisle path, no rrt star since just straight lines with no obstacles?
             # may run face-first into walls after picking up an object
             # if prev_state != state:
@@ -900,33 +902,78 @@ while robot.step(timestep) != -1 and MODE != 'planner':
             # task = rrt star to first cube in detection list, pick it up, all those other things
             vL = 0
             vR = 0
-            if ARM_STATE == 0:
-                moveArmToTarget(armTopIk)
-                ARM_STATE = 1
-                wait_timer = 0
-            if ARM_STATE == 1:
-                if wait_timer > 200:
-                    armForwardIk = calculateIk((0.5,0,UPPER_SHELF),target_orientation=np.array([-1, 0, 0]),orientation_mode="Z")
-                    moveArmToTarget(armForwardIk)
-                    openGrip()
-                    ARM_STATE = 2
+            if TASK != "grab_cube":
+                center_bin = LIDAR_ANGLE_BINS // 2
+                print(f"Front lidar: {lidar_values[center_bin]}")
+                largest_det = None
+                largest_det_size = -1
+                for det in detections:
+                    x1, y1, x2, y2, conf, cls = det
+                    if conf > 0.8:
+                        label = class_names[int(cls)]
+                        if label == "yellow":
+                            print(f"[DETECTION] {label} ({conf:.2f}) at [{int(x1)}, {int(y1)}, {int(x2)}, {int(y2)}], W {x2 - x1}, H {y2 - y1}")
+                            size = np.sqrt((x2-x1)**2 + (y2-y1)**2)
+                            if size > largest_det_size:
+                                largest_det_size = size
+                                largest_det = det
+                    x1, y1, x2, y2, _, _ = largest_det
+                if (x1+x2)/2 > 122: # Object on right half of screen
+                    # Turn right
+                    print("right")
+                    vL = (1)
+                    vR = (-1)
+                elif (x1+x2)/2 < 118: # Object on left half of screen
+                    # Turn left
+                    print("left")
+                    vL = (-1)
+                    vR = (1)
+                else: # Object in center
+                    # Go forward
+                    if lidar_values[center_bin] > 1:
+                        print("forward")
+                        vL = (1)
+                        vR = (1)
+                    else:
+                        # Stop at wall
+                        vL = 0
+                        vR = 0
+                        # Reach for cube
+                        print("reaching")
+                        TASK = "grab_cube"
+            else: # Grab cube
+                if ARM_STATE == 0:
+                    moveArmToTarget(armTopIk)
+                    ARM_STATE = 1
                     wait_timer = 0
-                else:
-                    wait_timer += 1
-            if ARM_STATE == 2:
-                if wait_timer > 200:
-                    armCubeIk = calculateIk((0.7,0,UPPER_SHELF+0.1),target_orientation=np.array([-1, 0.7, 0]),orientation_mode="Z")
-                    moveArmToTarget(armCubeIk)
-                    ARM_STATE = 3
-                else:
-                    wait_timer += 1
-            # for det in detections:
-            #     x1, y1, x2, y2, conf, cls = det
-            #     if conf > 0.8:
-            #         label = class_names[int(cls)]
-            #         print(f"[DETECTION] {label} ({conf:.2f}) at [{int(x1)}, {int(y1)}, {int(x2)}, {int(y2)}], W {x2-x1}, H {y2-y1}")
-            pass
-
+                if ARM_STATE == 1:
+                    if wait_timer > 150:
+                        # if avg height is > threshold UPPER SHELF else LOWER SHELF
+                        # Reach forward distance based on object size and compass angle? size is bigger if looking at corner than face and upper vs lower shelf
+                        FOREWARD_DISTANCE = 0.5
+                        armForwardIk = calculateIk((FOREWARD_DISTANCE,0,UPPER_SHELF),target_orientation=np.array([-1, 0, 0]),orientation_mode="Z")
+                        moveArmToTarget(armForwardIk)
+                        openGrip()
+                        ARM_STATE = "reaching_forward"
+                        wait_timer = 0
+                    else:
+                        wait_timer += 1
+                if ARM_STATE == "reaching_forward":
+                    if wait_timer > 150:
+                        ARM_STATE = "done"
+                    else:
+                        wait_timer += 1
+                if ARM_STATE == "done":
+                    print("DONE!")
+                    exit() # TODO: remove
+                    ARM_STATE = 0
+                    TASK = "follow_aisle"
+                #     if wait_timer > 200:
+                #         armCubeIk = calculateIk((0.7,0,UPPER_SHELF+0.1),target_orientation=np.array([-1, 0.7, 0]),orientation_mode="Z")
+                #         moveArmToTarget(armCubeIk)
+                #         ARM_STATE = 3
+                #     else:
+                #         wait_timer += 1
 
 
     # if(gripper_status=="open"):
