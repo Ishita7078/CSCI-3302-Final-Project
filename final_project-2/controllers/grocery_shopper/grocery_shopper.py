@@ -546,7 +546,7 @@ def moveArmToTarget(ikResults):
                 print("Setting {} to {}".format(my_chain.links[res].name, ikResults[res]))
 
 
-def calculateIk(target_position, target_orientation=None, orientation_mode=None):
+def calculateIk(target_position,  orient=True, orientation_mode="Y", target_orientation=[0,0,-0.5]):
     initial_guess = []
     for i, link in enumerate(my_chain.links):
         if my_chain.active_links_mask[i]:
@@ -758,10 +758,11 @@ arm_index = 0
 
 TASK = "follow_aisle"
 detection_timer = 0
+timesteps_without_detection = 0
 cube_bounds = None
 
-UPPER_SHELF = 1.02
-LOWER_SHELF = 0.6
+UPPER_SHELF = 1.12
+LOWER_SHELF = 0.7
 
 cmap = np.load("convolved_map.npy")
 # print(f"shape: {cmap.shape}")
@@ -930,6 +931,7 @@ while robot.step(timestep) != -1 and MODE != 'planner':
         else: # detections is not None or TASK == "grab_cube"
             if TASK != "grab_cube":
                 TASK = "go_to_cube"
+                timesteps_without_detection = 0
                 center_bin = LIDAR_ANGLE_BINS // 2
                 print(f"Front lidar: {lidar_values[center_bin]}")
                 largest_det = None
@@ -942,40 +944,39 @@ while robot.step(timestep) != -1 and MODE != 'planner':
                         largest_det = det
                 if largest_det is not None:
                     x1, y1, x2, y2, _, _ = largest_det
-                    if (x1+x2)/2 > 122: # Object on right half of screen
-                        # Turn right
-                        print("right")
-                        vL = (1)
-                        vR = (-1)
-                    elif (x1+x2)/2 < 118: # Object on left half of screen
-                        # Turn left
-                        print("left")
-                        vL = (-1)
-                        vR = (1)
-                    else: # Object in center
-                        # Go forward
-                        if lidar_values[center_bin] > 1.02:
-                            print("forward")
-                            vL = (1)
-                            vR = (1)
-                        elif lidar_values[center_bin] < 0.98:
-                            print("backward")
-                            vL = (-1)
-                            vR = (-1)
-                        else:
-                            # Stop at wall
-                            vL = 0
-                            vR = 0
-                            # Reach for cube
-                            print("reaching")
-                            TASK = "grab_cube"
-                            cube_bounds = [x1, y1, x2, y2]
+                    x_offset = (x1+x2)/2 - 120
+                    turn_speed = x_offset/40
+                    turn_speed = max(min(turn_speed,1),-1)
+                    if 1.11 <= lidar_values[center_bin] <= 1.13:
+                        # Stop at wall
+                        vL = 0
+                        vR = 0
+                        # Reach for cube
+                        print("reaching")
+                        TASK = "grab_cube"
+                        cube_bounds = [x1, y1, x2, y2]
+                    else:
+                        speed = max(1, min(5, (lidar_values[center_bin] - 1.13) * 5 + 1))
+                        vL = speed * (1+turn_speed)
+                        vR = speed * (1-turn_speed)
+                        # Tight turn
+                        if abs(vL) < 1 and abs(vR) > 2.5:
+                            vL = -abs(vR)
+                        elif abs(vR) < 1 and abs(vL) > 2.5:
+                            vR = -abs(vL)
+                        vL = max(min(vL,5),-5)
+                        vR = max(min(vR,5),-5)
+                        print(vL, vR)
                 else: # Detections is None
                     # Continue with previous wheel speeds until cube is seen again
-                    print(f"DDDDDDDDDDDDDDDDDDDDDDDDDetections {detections}, {TASK}")
+                    print(f"DDDDDDDDDDDDDDDDDDDDDDDDDetections {detections}, {TASK}, {vL}, {vR}")
+                    if timesteps_without_detection > 20:
+                        TASK = "follow_aisle"
+                    timesteps_without_detection += 1
 
             else: # Grab cube
                 if cube_bounds is None:
+                    cube_bounds = [117, 125, 126, 135] # Temp value for testing arm movement
                     print("Error: reaching for undefined cube!")
                 if ARM_STATE == 0:
                     moveArmToTarget(armTopIk)
@@ -992,26 +993,63 @@ while robot.step(timestep) != -1 and MODE != 'planner':
                         openGrip()
                         ARM_STATE = "follow_arm_path"
                         # Reach forward distance based on object size and compass angle? size is bigger if looking at corner than face and upper vs lower shelf
-                        FORWARD_DISTANCE = 0.8
-                        arm_linspace = np.linspace(np.array([0.4, 0]), np.array([FORWARD_DISTANCE, 0]), 10)
+                        FORWARD_DISTANCE = 0.7
+                        arm_linspace = np.linspace(np.array([0.4, 0]), np.array([FORWARD_DISTANCE, 0]), 5)
                         for point in arm_linspace:
                             arm_path.append((point[0], point[1], shelf))
-                if ARM_STATE == "follow_arm_path":
-                    if stalled_for(150):
+                elif ARM_STATE == "follow_arm_path":
+                    if stalled_for(75):
                         if arm_index >= len(arm_path):
-                            ARM_STATE = "reaching_forward"
+                            ARM_STATE = "lower_arm"
                             arm_index = 0
                         else:
                             print(arm_path[arm_index])
-                            armForwardIk = calculateIk(arm_path[arm_index])  # target_orientation=np.array([-1, 0, 0]),orientation_mode="Z"
+                            armForwardIk = calculateIk(arm_path[arm_index])
                             moveArmToTarget(armForwardIk)
                             arm_index += 1
-                if ARM_STATE == "reaching_forward":
+                elif ARM_STATE == "lower_arm":
                     if stalled_for(150):
+                        arm_x, arm_y, arm_z = arm_path[-1]
+                        lowerIk = calculateIk((arm_x, arm_y, arm_z-0.15))
+                        moveArmToTarget(lowerIk)
+                        ARM_STATE = "wiggle_cube"
+                elif ARM_STATE == "wiggle_cube":
+                    if stalled_for(150):
+                        arm_x, arm_y, arm_z = arm_path[-1]
+                        wiggleIk = calculateIk((arm_x+0.1, arm_y, arm_z-0.15))
+                        moveArmToTarget(wiggleIk)
+                        ARM_STATE = "close_grip"
+                elif ARM_STATE == "close_grip":
+                    if stalled_for(100):
+                        closeGrip()
+                        ARM_STATE = "wiggle_cube_2"
+                elif ARM_STATE == "wiggle_cube_2":
+                    if stalled_for(150):
+                        arm_x, arm_y, arm_z = arm_path[-1]
+                        wiggleIk = calculateIk((arm_x-0.1, arm_y, arm_z-0.15))
+                        moveArmToTarget(wiggleIk)
+                        ARM_STATE = "raise_arm"
+                elif ARM_STATE == "raise_arm":
+                    if stalled_for(100):
+                        raiseIk = calculateIk(arm_path[-1])
+                        moveArmToTarget(raiseIk)
+                        ARM_STATE = "extract_from_shelf"
+                elif ARM_STATE == "extract_from_shelf":
+                    if stalled_for(100):
+                        extractIk = calculateIk((0.4, -0.4, shelf))
+                        moveArmToTarget(extractIk)
+                        ARM_STATE = "move_to_basket"
+                elif ARM_STATE == "move_to_basket":
+                    if stalled_for(150):
+                        basketIk = calculateIk((0.2,0,0.5))
+                        print("move_to_basket")
+                        moveArmToTarget(basketIk)
+                        ARM_STATE = "open_grip"
+                elif ARM_STATE == "open_grip":
+                    if stalled_for(100):
+                        openGrip()
                         ARM_STATE = "done"
-                if ARM_STATE == "done":
-                    print("DONE!")
-                    exit()
+                elif ARM_STATE == "done":
                     ARM_STATE = 0
                     TASK = "follow_aisle"
                     cube_bounds = None
