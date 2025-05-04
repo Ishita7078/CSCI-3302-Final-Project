@@ -99,9 +99,9 @@ pose_theta = 0
 vL = 0
 vR = 0
 
-MODE = 'map'
+# MODE = 'map'
 # MODE = 'planner'
-# MODE = 'navigation'
+MODE = 'navigation'
 
 
 HEIGHT = 914
@@ -197,34 +197,6 @@ def line_algo(x0, y0, x1, y1): #bresenham's line algorithm
         if e2 < dx:
             err += dx
             y0 += s_inc
-
-def forward_clear(pose_x, pose_y, pose_theta, lidar_values, threshold=2.0):
-    center_bin = LIDAR_ANGLE_BINS // 2  # center of the LIDAR sensor range
-    forward_range = range(center_bin - 10, center_bin + 10)  # range of bins looking forward
-    
-    for bin in forward_range: # check if path is clear
-        distance = lidar_values[bin]
-        world_coords = to_world(bin, distance)
-        if world_coords is not None:
-            world_x, world_y = world_coords
-            if distance < threshold: # check if the distance is within threshold
-                return False  # blocked path, too close
-    return True  # clear path
-
-def side_clear(pose_x, pose_y, pose_theta, lidar_values, side="left", threshold=2.0):
-    angle_offset = math.pi / 2 if side == "left" else -math.pi / 2 # side direction: left = +90°, right = -90°
-    side_bin_start = LIDAR_ANGLE_BINS // 2 - 100  # left side bins
-    side_bin_end = LIDAR_ANGLE_BINS // 2 + 100    # right side bins
-    
-    for bin in range(side_bin_start, side_bin_end): #check side
-        print(bin)
-        distance = lidar_values[bin]
-        world_coords = to_world(bin, distance)
-        if world_coords is not None:
-            world_x, world_y = world_coords
-            if distance < threshold:
-                return False  # blocked path, too close
-    return True  # clear path
 
 def is_clear(lidar_vals, bin_range, threshold=2.0):
             return np.mean([lidar_vals[i] for i in bin_range]) > threshold
