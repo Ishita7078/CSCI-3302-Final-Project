@@ -126,11 +126,11 @@ pose_x     = -5
 pose_y     = -5
 pose_theta = 0
 
-# Odometry
-pose_x_test     = -5
-pose_y_test    = -5
-pose_theta_test = 0
-print(pose_x_test,pose_y_test,pose_theta_test)
+# # Odometry
+# pose_x_test     = -5
+# pose_y_test    = -5
+# pose_theta_test = 0
+# print(pose_x_test,pose_y_test,pose_theta_test)
 
 vL = 0
 vR = 0
@@ -244,43 +244,64 @@ def ik_controller(vL, vR, x_i, y_i, pose_x, pose_y, pose_theta, waypoints, index
     # print(f"vL: {vL}, vR: {vR}")
     return vL, vR, x_i, y_i, index
 
+def get_pose(gps, compass):
+    n = compass.getValues()
+    x = gps.getValues()[0]-0.2*n[1] # Adjust pose for difference between GPS and true pose
+    y = gps.getValues()[1]-0.2*n[0] # Adjust pose for difference between GPS and true pose
 
+    theta = math.atan2(n[0], n[1])
+    return x,y,theta
+
+reset_tracker = 0
 def odometry():
-    global vL, vR, pose_x_test, pose_y_test, pose_theta_test, prev_left_position, prev_right_position, left_wheel_sensor, right_wheel_sensor
+    global vL, vR, pose_x, pose_y, pose_theta, prev_left_position, prev_right_position, left_wheel_sensor, right_wheel_sensor, gps, compass, reset_tracker
     radius = .0982
     dt = timestep/1000
-    position_left = left_wheel_sensor.getValue()
-    position_right = right_wheel_sensor.getValue()
-    print("pos right")
-    print(position_right)
-    print("pos left")
-    print(position_left)
-    print("prev pos right")
-    print(prev_right_position)
-    print("prev pos left")
-    print(prev_left_position)
-    # radius = MAX_SPEED_MS / MAX_SPEED
 
-    change_in_left_wheel = (position_left - prev_left_position)
-    change_in_right_wheel = (position_right - prev_right_position)
+    if reset_tracker < 32:
+        position_left = left_wheel_sensor.getValue()
+        position_right = right_wheel_sensor.getValue()
+        # print("pos right")
+        # print(position_right)
+        # print("pos left")
+        # print(position_left)
+        # print("prev pos right")
+        # print(prev_right_position)
+        # print("prev pos left")
+        # print(prev_left_position)
+        # radius = MAX_SPEED_MS / MAX_SPEED
 
-    dist_left = change_in_left_wheel * radius
-    dist_right = change_in_right_wheel * radius
+        change_in_left_wheel = (position_left - prev_left_position)
+        change_in_right_wheel = (position_right - prev_right_position)
 
-    dist = (dist_right + dist_left) * 0.5
-    theta = (dist_right - dist_left) / AXLE_LENGTH 
+        dist_left = change_in_left_wheel * radius
+        dist_right = change_in_right_wheel * radius
 
-    pose_x_test += dist * math.cos(pose_theta_test) 
-    pose_y_test += dist * math.sin(pose_theta_test)
+        dist = (dist_right + dist_left) * 0.5
+        theta = (dist_right - dist_left) / AXLE_LENGTH 
 
-    pose_theta_test += theta
-    pose_theta_test = (pose_theta_test + math.pi) % (2 * math.pi) - math.pi 
+        pose_x += dist * math.cos(pose_theta_test) 
+        pose_y += dist * math.sin(pose_theta_test)
 
-    print("ODOM")
-    print(pose_x_test,pose_y_test,pose_theta_test)
-    prev_left_position = position_left
-    prev_right_position = position_right
-    return pose_x_test, pose_y_test, pose_theta_test
+        pose_theta += theta
+        pose_theta = (pose_theta_test + math.pi) % (2 * math.pi) - math.pi 
+
+        # print("ODOM real")
+        # print(pose_x_test,pose_y_test,pose_theta_test)
+        prev_left_position = position_left
+        prev_right_position = position_right
+        reset_tracker +=1
+    else:
+        print("RESET")
+        print(" ")
+        print(" ")
+        print(" ")
+        print(" ")
+        pose_x, pose_y, pose_theta = get_pose(gps,compass)
+        print("ODOM")
+        print(pose_x,pose_y,pose_theta)
+        reset_tracker = 0
+    return pose_x, pose_y, pose_theta
 
 
 def to_pixels(x, y):
@@ -427,7 +448,7 @@ def rrt_star(convolved_map, state_is_valid, starting_point, goal_point, k, delta
     node_list = []
     cost_list = {}
     first = Node(starting_point, parent=None)
-    node_list.append(first)  # Add Node at starting point with no parent
+    node_list.append(first) 
     cost_list.update({tuple(first.point): 0})
     rad = delta_q * 1.5
     for i in range(1, k):
@@ -789,20 +810,33 @@ armTopIk = calculateIk(armTop)
 # Main Loop
 while robot.step(timestep) != -1 and MODE != 'planner':
 
-    # ###################
+    ###################
+    # values = trans_field.getSFVec3f()
+    # pose_x = values[0]
+    # pose_y = values[1]
+    # n = compass.getValues()
+    # pose_theta = math.atan2(n[0], n[1])
+
     # left = left_wheel_sensor.getValue()
     # right = right_wheel_sensor.getValue()
     # vL = 2
-    # vR = 2
-    # print(MAX_SPEED_MS/MAX_SPEED)
+    # vR = -2
+    # # print(MAX_SPEED_MS/MAX_SPEED)
     # robot_parts[MOTOR_LEFT].setVelocity(vL)
     # robot_parts[MOTOR_RIGHT].setVelocity(vR)
-    # print(f"Left wheel position: {left}, Right wheel position: {right}")
+    # pose_x_test, pose_y_test, pose_theta_test = odometry()
+
+    # print(f"ACTUAL === X: {pose_x:.4f}, Y: {pose_y:.4f}, X: {pose_theta:.4f}")
+    # print(f"ODOM ===== X: {pose_x_test:.4f}, Y: {pose_y_test:.4f}, X: {pose_theta_test:.4f}")
+    # print(" ")
+    # print(" ")
+
+    # # print(f"Left wheel position: {left}, Right wheel position: {right}")
     # continue
-    # ###################
+    ###################
 
 
-    pose_x_test, pose_y_test, pose_theta_test = odometry()
+    pose_x, pose_y, pose_theta = odometry()
     # print(pose_x, pose_y, pose_theta)
     lidar_values = np.array(lidar.getRangeImage())
 
