@@ -28,7 +28,6 @@ LIDAR_SENSOR_MAX_RANGE = 5.5 # Meters
 LIDAR_ANGLE_RANGE = math.radians(240)
 print(LIDAR_ANGLE_BINS)
 lidar_offsets = np.linspace(-LIDAR_ANGLE_RANGE / 2., LIDAR_ANGLE_RANGE / 2., LIDAR_ANGLE_BINS)
-# lidar_offsets = lidar_offsets[::-1]
 
 # create the Robot instance.
 robot = Robot()
@@ -113,11 +112,10 @@ resolution = 0.0033  # meters per cell
 grid_width = int(map_size[0] * SCALE)
 grid_height = int(map_size[1] * SCALE)
 occupancy_grid = np.zeros((grid_width, grid_height))
-# occupancy_grid = np.zeros((300, 300))
 lidar_offsets = np.linspace(-LIDAR_ANGLE_RANGE/2., +LIDAR_ANGLE_RANGE/2., LIDAR_ANGLE_BINS)
 
 
-def get_pose(gps, compass): #webots provided pose, CHANGE
+def get_pose(gps, compass): #webots provided pose
     x_r = gps.getValues()[0]
     y_r = gps.getValues()[1]
     theta_r = np.arctan2(compass.getValues()[0], compass.getValues()[1])
@@ -508,7 +506,7 @@ while robot.step(timestep) != -1:
 
     if MODE == 'map':
         # print(pose_x, pose_y, pose_theta)
-        pose_x, pose_y, pose_theta = get_pose(gps, compass) #webots pose, CHANGE
+        pose_x, pose_y, pose_theta = get_pose(gps, compass) #webots pose
         pose_pixels = to_pixels(pose_x, pose_y)
         occupancy_grid[pose_pixels[0]][pose_pixels[1]] = 2
         robot_x, robot_y = to_pixels(pose_x, pose_y)
