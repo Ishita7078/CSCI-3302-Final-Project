@@ -767,7 +767,7 @@ arm_index = 0
 TASK = "follow_aisle"
 detection_timer = 0
 timesteps_without_detection = 0
-wall_following_done = False
+WALL_MODE = "not_done"
 cube_bounds = None
 
 UPPER_SHELF = 1.12
@@ -783,6 +783,7 @@ armTopIk = calculateIk(armTop)
 
 # Main Loop
 while robot.step(timestep) != -1 and MODE != 'planner':
+    print(f"WALL MODE: {WALL_MODE}, Wait Timer: {wait_timer}")
     # pose_x, pose_y, pose_theta = odometry()
     # print(pose_x, pose_y, pose_theta)
     lidar_values = np.array(lidar.getRangeImage())
@@ -847,9 +848,41 @@ while robot.step(timestep) != -1 and MODE != 'planner':
         pose_theta = math.atan2(n[0], n[1])
         # TODO: remove ^^^^^^^^^
         # print(pose_x, pose_y, pose_theta)
+        if WALL_MODE == "forward_left" or WALL_MODE == "forward_right":
+            # Continue forward for x timesteps
+            if WALL_MODE == "forward_left":
+                vL, vR = 1.8, 2
+            else:
+                vL, vR = 2, 1.8
+            print("Calling stalled_for")
+            if stalled_for(150):
+                if WALL_MODE == "forward_left":
+                    WALL_MODE = "turn_left"
+                elif WALL_MODE == "forward_right":
+                    WALL_MODE = "turn_right"
+
+            robot_parts[MOTOR_LEFT].setVelocity(vL)
+            robot_parts[MOTOR_RIGHT].setVelocity(vR)
+            continue
+        elif WALL_MODE == "turn_left":
+            vL = -2
+            vR = 2
+            if stalled_for(100):
+                WALL_MODE = "done"
+            robot_parts[MOTOR_LEFT].setVelocity(vL)
+            robot_parts[MOTOR_RIGHT].setVelocity(vR)
+            continue
+        elif WALL_MODE == "turn_right":
+            vL = 2
+            vR = -2
+            if stalled_for(100):
+                WALL_MODE = "done"
+            robot_parts[MOTOR_LEFT].setVelocity(vL)
+            robot_parts[MOTOR_RIGHT].setVelocity(vR)
+            continue
 
         detections = []
-        if TASK != "grab_cube":
+        if TASK != "grab_cube" and WALL_MODE not in ["forward_left", "forward_right", "turn_left", "turn_right"]:
             if detection_timer > 10 or TASK == "go_to_cube": # Only check for detections every 10 timesteps, laggy
                 detection_timer = 0
                 img = camera.getImageArray()
@@ -965,10 +998,10 @@ while robot.step(timestep) != -1 and MODE != 'planner':
                             min_lidar = lidar_values[i]
                             min_lidar_index = i
                     print(f"Min Lidar: {min_lidar} at {min_lidar_index}")
-                    if (min_lidar_index > 380 or min_lidar_index < 280) and wall_following_done == False:
+                    if (min_lidar_index > 380 or min_lidar_index < 280) and (WALL_MODE == "not_done"):
                         # Wall following
-                        if min_lidar < 2:
-                            if min_lidar_index > 380 and x_offset > 0:
+                        if min_lidar < 1.5:
+                            if min_lidar_index > 380 and x_offset > -10:
                                 # Wall on right
                                 print("following right")
                                 print(pose_theta)
@@ -987,11 +1020,11 @@ while robot.step(timestep) != -1 and MODE != 'planner':
                                             vR = 1
                                         else:
                                             print("done following wall")
-                                            wall_following_done = True
+                                            WALL_MODE = "forward_right"
                                 robot_parts[MOTOR_LEFT].setVelocity(vL)
                                 robot_parts[MOTOR_RIGHT].setVelocity(vR)
                                 continue
-                            elif min_lidar_index < 280 and x_offset < 0:
+                            elif min_lidar_index < 280 and x_offset < 10:
                                 # Wall on left
                                 print("following left")
                                 if pose_theta < 0:
@@ -1001,14 +1034,17 @@ while robot.step(timestep) != -1 and MODE != 'planner':
                                     vL = 1
                                     vR = 1
                                     if x_offset < -100:
-                                        wall_following_done = True
+                                        print("Done following left")
+                                        WALL_MODE = "forward_left"
                                 robot_parts[MOTOR_LEFT].setVelocity(vL)
                                 robot_parts[MOTOR_RIGHT].setVelocity(vR)
                                 continue
 
-                    # Not following wall or finished following wall
-
-                    if 1.11 <= lidar_values[center_bin] <= 1.13:
+                    if lidar_values[center_bin] < 1.11:
+                        print("backing up")
+                        vL = -1
+                        vR = -1
+                    elif 1.11 <= lidar_values[center_bin] <= 1.13 and abs(x_offset) < 3:
                         # Stop at wall
                         vL = 0
                         vR = 0
@@ -1016,7 +1052,6 @@ while robot.step(timestep) != -1 and MODE != 'planner':
                         print("reaching")
                         TASK = "grab_cube"
                         cube_bounds = [x1, y1, x2, y2]
-                        wall_following_done = False
                     else:
                         VMAX = 2
                         speed = max(1, min(VMAX, (lidar_values[center_bin] - 1.13) * 5 + 1))
@@ -1031,7 +1066,7 @@ while robot.step(timestep) != -1 and MODE != 'planner':
                         vR = max(min(vR,VMAX),-VMAX)
                         print(vL, vR)
                 else: # Detections is None
-                    # Continue with previous wheel speeds until cube is seen again
+                    # Continue forward until cube is seen again
                     vL = 2
                     vR = 2
                     print(f"DDDDDDDDDDDDDDDDDDDDDDDDDetections {detections}, {TASK}, {vL}, {vR}")
@@ -1108,7 +1143,7 @@ while robot.step(timestep) != -1 and MODE != 'planner':
                         ARM_STATE = "move_to_basket"
                 elif ARM_STATE == "move_to_basket":
                     if stalled_for(150):
-                        basketIk = calculateIk((0.2,0,0.5))
+                        basketIk = calculateIk((0.2,0,0.8))
                         print("move_to_basket")
                         moveArmToTarget(basketIk)
                         ARM_STATE = "open_grip"
@@ -1119,6 +1154,7 @@ while robot.step(timestep) != -1 and MODE != 'planner':
                 elif ARM_STATE == "done":
                     ARM_STATE = 0
                     TASK = "follow_aisle"
+                    WALL_MODE = "not_done"
                     cube_bounds = None
                 #     if wait_timer > 200:
                 #         armCubeIk = calculateIk((0.7,0,UPPER_SHELF+0.1),target_orientation=np.array([-1, 0.7, 0]),orientation_mode="Z")
