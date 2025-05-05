@@ -126,9 +126,9 @@ pose_theta = 0
 vL = 0
 vR = 0
 
-MODE = 'map'
+# MODE = 'map'
 # MODE = 'planner'
-# MODE = 'navigation'
+MODE = 'navigation'
 
 vrb = False # Verbose print in joint helper functions
 
