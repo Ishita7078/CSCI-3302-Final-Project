@@ -126,9 +126,9 @@ pose_theta = 0
 vL = 0
 vR = 0
 
-# MODE = 'map'
+MODE = 'map'
 # MODE = 'planner'
-MODE = 'navigation'
+# MODE = 'navigation'
 
 vrb = False # Verbose print in joint helper functions
 
@@ -266,7 +266,7 @@ def get_pose(gps, compass):
     y = gps.getValues()[1]-0.2*n[0] 
 
     theta = math.atan2(n[0], n[1])
-    return x,y,theta
+    return x, -y, theta
 
 reset_tracker = 0
 # Calculate odometry using change in wheel position
