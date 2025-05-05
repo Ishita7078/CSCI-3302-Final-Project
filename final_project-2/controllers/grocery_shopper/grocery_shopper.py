@@ -33,7 +33,6 @@ LIDAR_SENSOR_MAX_RANGE = 5.5 # Meters
 LIDAR_ANGLE_RANGE = math.radians(240)
 # print(LIDAR_ANGLE_BINS)
 lidar_offsets = np.linspace(-LIDAR_ANGLE_RANGE / 2., LIDAR_ANGLE_RANGE / 2., LIDAR_ANGLE_BINS)
-# lidar_offsets = lidar_offsets[::-1]
 
 # create the Robot instance.
 robot = Robot()
@@ -161,7 +160,6 @@ resolution = 0.0033  # meters per cell
 grid_width = int(map_size[0] * SCALE)
 grid_height = int(map_size[1] * SCALE)
 occupancy_grid = np.zeros((grid_width, grid_height))
-# occupancy_grid = np.zeros((300, 300))
 lidar_offsets = np.linspace(-LIDAR_ANGLE_RANGE/2., +LIDAR_ANGLE_RANGE/2., LIDAR_ANGLE_BINS)
 
 wait_timer = 0
@@ -366,6 +364,29 @@ def line_algo(x0, y0, x1, y1): #bresenham's line algorithm
             err += dx
             y0 += s_inc
 
+
+def is_clear(lidar_vals, bin_range, threshold=2.0):
+            return np.mean([lidar_vals[i] for i in bin_range]) > threshold
+
+def grid_clear(pose_x, pose_y, pose_theta, direction="left", distance=0.5, size=3):
+    angle_offset = math.pi / 2 if direction == "left" else -math.pi / 2
+    check_theta = pose_theta + angle_offset
+
+    check_x = pose_x + distance * math.cos(check_theta) #position in world coordinates
+    check_y = pose_y + distance * math.sin(check_theta)
+    
+    x_pix, y_pix = to_pixels(check_x, check_y)
+
+    half = size // 2 #to create grid around world
+    for dx in range(-half, half + 1): #check grid around position
+        for dy in range(-half, half + 1):
+            x = x_pix + dx
+            y = y_pix + dy
+            if 0 <= x < grid_width and 0 <= y < grid_height:
+                if occupancy_grid[x][y] == 3:  # obstacle
+                    return False
+    return True
+  
 #####
 # RRT Star Helper Functions
 #####
@@ -374,7 +395,6 @@ class Node:
         self.point = pt  # n-Dimensional point
         self.parent = parent  # Parent node
         self.path_from_parent = []  # List of points along the way from the parent node (for visualization)
-
 
 def get_distance_helper(point1,point2):
     return np.linalg.norm(np.array(point1) - np.array(point2))
@@ -723,6 +743,9 @@ cmap = np.load("convolved_map.npy")
 armTop = (0,0,2) # Position arm above head
 armTopIk = calculateIk(armTop)
 
+gripper_status="closed"
+state = "forward"
+
 # Main Loop
 while robot.step(timestep) != -1 and MODE != 'planner':
     pose_x, pose_y, pose_theta = odometry() # Get pose from odometry
@@ -737,8 +760,8 @@ while robot.step(timestep) != -1 and MODE != 'planner':
 
     # Mapping mode
     if MODE == 'map':
-
         # print(pose_x, pose_y, pose_theta)
+        pose_x, pose_y, pose_theta = get_pose(gps, compass) #webots pose
         pose_pixels = to_pixels(pose_x, pose_y)
         occupancy_grid[pose_pixels[0]][pose_pixels[1]] = 2
         robot_x, robot_y = to_pixels(pose_x, pose_y)
@@ -770,14 +793,55 @@ while robot.step(timestep) != -1 and MODE != 'planner':
         left_bin = int(center_bin - 100)
         right_bin = int(center_bin + 100)
 
-        # # Thresholds for "clear"
-        forward_clear = lidar_values[center_bin] > 1.0
+        center_range = range(center_bin - 10, center_bin + 10)
+        left_range   = range(left_bin - 10, left_bin + 10)
+        right_range  = range(right_bin - 10, right_bin + 10)
+        
+        forward_clear = is_clear(lidar_values, center_range) 
+        left_clear    = is_clear(lidar_values, left_range)
+        right_clear   = is_clear(lidar_values, right_range) 
 
-        if forward_clear:
-            vL, vR = 10, 10  # move forward
-        else:
-            vL, vR = 1, -1  # if boxed in, turn right
-
+        if state == "forward":
+            if forward_clear:
+                vL, vR = 5, 5
+            elif not grid_clear(pose_x, pose_y, pose_theta, "left"):
+                state = "turn_right"
+                turn_counter = 40
+                vL, vR = 0, -3
+            elif not grid_clear(pose_x, pose_y, pose_theta, "right"):
+                state = "turn_left"
+                turn_counter = 40
+                vL, vR = -3, 0
+            elif left_clear and right_clear:
+                state = "turn_left"
+                turn_counter = 40
+                vL, vR = -3, 0
+            else:
+                state = "reverse"
+                turn_counter = 20
+                vL, vR = -4, -4
+        
+        elif state == "turn_left":
+            if turn_counter > 0:
+                vL, vR = -3, 0
+                turn_counter -= 1
+            else:
+                state = "forward"
+        
+        elif state == "turn_right":
+            if turn_counter > 0:
+                vL, vR = 0, -3
+                turn_counter -= 1
+            else:
+                state = "forward"
+        
+        elif state == "reverse":
+            if turn_counter > 0:
+                vL, vR = -4, -4
+                turn_counter -= 1
+            else:
+                state = random.choice(["turn_left", "turn_right"])
+                turn_counter = 20
 
         robot_parts[MOTOR_LEFT].setVelocity(vL)
         robot_parts[MOTOR_RIGHT].setVelocity(vR)
