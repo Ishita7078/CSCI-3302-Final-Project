@@ -37,8 +37,8 @@ lidar_offsets = np.linspace(-LIDAR_ANGLE_RANGE / 2., LIDAR_ANGLE_RANGE / 2., LID
 
 # create the Robot instance.
 robot = Supervisor()
-marker = robot.getFromDef("marker").getField("translation") # TODO: remove
-trans_field = robot.getSelf().getField("translation") # TODO: remove
+# marker = robot.getFromDef("marker").getField("translation") # TODO: remove
+# trans_field = robot.getSelf().getField("translation") # TODO: remove
 
 # get the time step of the current world.
 timestep = int(robot.getBasicTimeStep())
@@ -104,6 +104,19 @@ lidar.enablePointCloud()
 
 # Enable display
 display = robot.getDevice("display")
+
+# Get the position sensor for the left wheel
+left_wheel_sensor = robot.getDevice('wheel_left_joint_sensor')
+# Enable the sensor with a sampling period of 'timestep'
+left_wheel_sensor.enable(timestep)
+
+# Get the position sensor for the left wheel
+right_wheel_sensor = robot.getDevice('wheel_right_joint_sensor')
+# Enable the sensor with a sampling period of 'timestep'
+right_wheel_sensor.enable(timestep)
+
+prev_left_position = left_wheel_sensor.getValue()
+prev_right_position = right_wheel_sensor.getValue()
 
 keyboard = robot.getKeyboard()
 keyboard.enable(timestep)
@@ -236,30 +249,45 @@ def ik_controller(vL, vR, x_i, y_i, pose_x, pose_y, pose_theta, waypoints, index
     return vL, vR, x_i, y_i, index
 
 
+def get_pose(gps, compass):
+    n = compass.getValues()
+    x = gps.getValues()[0]-0.2*n[1] # Adjust pose for difference between GPS and true pose
+    y = gps.getValues()[1]-0.2*n[0] # Adjust pose for difference between GPS and true pose
+
+    theta = math.atan2(n[0], n[1])
+    return x,y,theta
+
+reset_tracker = 0
 def odometry():
-    global vL, vR, pose_x, pose_y, pose_theta
+    global vL, vR, pose_x, pose_y, pose_theta, prev_left_position, prev_right_position, left_wheel_sensor, right_wheel_sensor, gps, compass, reset_tracker
+    radius = .0982
     dt = timestep/1000
 
-    vL = vL / MAX_SPEED * MAX_SPEED_MS
-    vR = vR / MAX_SPEED * MAX_SPEED_MS
+    if reset_tracker < 32:
+        position_left = left_wheel_sensor.getValue()
+        position_right = right_wheel_sensor.getValue()
 
-    dist_left = vL * dt
-    dist_right = vR * dt
-    # print(f'DIST_RIGHT {dist_right} DIST_LEFT {dist_left}')
+        change_in_left_wheel = (position_left - prev_left_position)
+        change_in_right_wheel = (position_right - prev_right_position)
 
-    dist = (dist_right + dist_left) * 0.5
-    theta = (dist_right - dist_left) / AXLE_LENGTH
+        dist_left = change_in_left_wheel * radius
+        dist_right = change_in_right_wheel * radius
 
-    pose_x += dist * math.cos(pose_theta)
-    pose_y += dist * math.sin(pose_theta)
+        dist = (dist_right + dist_left) * 0.5
+        theta = (dist_right - dist_left) / AXLE_LENGTH
 
-    pose_theta += theta
+        pose_x += dist * math.cos(pose_theta)
+        pose_y += dist * math.sin(pose_theta)
 
-    if pose_theta > math.pi:
-        pose_theta -= 2 * math.pi
-    elif pose_theta < -math.pi:
-        pose_theta += 2 * math.pi
+        pose_theta += theta
+        pose_theta = (pose_theta + math.pi) % (2 * math.pi) - math.pi
 
+        prev_left_position = position_left
+        prev_right_position = position_right
+        reset_tracker +=1
+    else:
+        pose_x, pose_y, pose_theta = get_pose(gps,compass)
+        reset_tracker = 0
     return pose_x, pose_y, pose_theta
 
 
@@ -789,8 +817,11 @@ armTopIk = calculateIk(armTop)
 # Main Loop
 while robot.step(timestep) != -1 and MODE != 'planner':
     # print(f"WALL MODE: {WALL_MODE}, Wait Timer: {wait_timer}")
-    # pose_x, pose_y, pose_theta = odometry()
-    # print(pose_x, pose_y, pose_theta)
+    pose_x, pose_y, pose_theta = odometry()
+    if np.isnan(pose_x) or np.isnan(pose_y) or np.isnan(pose_theta):
+        pose_x, pose_y, pose_theta = -5,0,0
+        print("NaN pose at first iteration!")
+        continue
     lidar_values = np.array(lidar.getRangeImage())
 
     if MODE == 'map':
@@ -843,14 +874,14 @@ while robot.step(timestep) != -1 and MODE != 'planner':
         np.save(file_path, occupancy_grid)
         print(f"Occupancy grid saved to {file_path}")
     elif MODE == 'navigation':
-        if current_path and len(current_path) > state:
-            marker.setSFVec3f([current_path[state][0], current_path[state][1], 2.4]) # TODO: remove
+        # if current_path and len(current_path) > state:
+        #     marker.setSFVec3f([current_path[state][0], current_path[state][1], 2.4]) # TODO: remove
 
-        values = trans_field.getSFVec3f()
-        pose_x = values[0]
-        pose_y = values[1]
-        n = compass.getValues()
-        pose_theta = math.atan2(n[0], n[1])
+        # values = trans_field.getSFVec3f()
+        # pose_x = values[0]
+        # pose_y = values[1]
+        # n = compass.getValues()
+        # pose_theta = math.atan2(n[0], n[1])
         # TODO: remove ^^^^^^^^^
         # print(pose_x, pose_y, pose_theta)
         if WALL_MODE == "forward_left" or WALL_MODE == "forward_right":
@@ -916,7 +947,7 @@ while robot.step(timestep) != -1 and MODE != 'planner':
                     filtered_detections.append(det)
         detections = filtered_detections
 
-        if green_count > 4:
+        if green_count > 3:
             timesteps_without_detection = 0
             print("Too many greens, backing up!")
             vL, vR = -2,-2
@@ -929,7 +960,7 @@ while robot.step(timestep) != -1 and MODE != 'planner':
             # may run face-first into walls after picking up an object
             # if prev_state != state:
             # prev_state = state
-            if state != len(current_path):
+            if state < len(current_path):
                 # print(state, current_path)
                 vL, vR, x_i, y_i, state = ik_controller(vL, vR, x_i, y_i, pose_x, pose_y, pose_theta, current_path, state)
             else:
@@ -987,7 +1018,7 @@ while robot.step(timestep) != -1 and MODE != 'planner':
                 current_path.append(path_world_coords[-1])
                 current_path.pop(0)
                 # print(current_path)
-                plt.show()
+                # plt.show()
         else: # detections is not None or TASK == "grab_cube"
             if TASK != "grab_cube":
                 TASK = "go_to_cube"
