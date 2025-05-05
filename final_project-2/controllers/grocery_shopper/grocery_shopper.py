@@ -261,15 +261,6 @@ def odometry():
     if reset_tracker < 32:
         position_left = left_wheel_sensor.getValue()
         position_right = right_wheel_sensor.getValue()
-        # print("pos right")
-        # print(position_right)
-        # print("pos left")
-        # print(position_left)
-        # print("prev pos right")
-        # print(prev_right_position)
-        # print("prev pos left")
-        # print(prev_left_position)
-        # radius = MAX_SPEED_MS / MAX_SPEED
 
         change_in_left_wheel = (position_left - prev_left_position)
         change_in_right_wheel = (position_right - prev_right_position)
@@ -280,14 +271,12 @@ def odometry():
         dist = (dist_right + dist_left) * 0.5
         theta = (dist_right - dist_left) / AXLE_LENGTH 
 
-        pose_x += dist * math.cos(pose_theta_test) 
-        pose_y += dist * math.sin(pose_theta_test)
+        pose_x += dist * math.cos(pose_theta) 
+        pose_y += dist * math.sin(pose_theta)
 
         pose_theta += theta
-        pose_theta = (pose_theta_test + math.pi) % (2 * math.pi) - math.pi 
+        pose_theta = (pose_theta + math.pi) % (2 * math.pi) - math.pi 
 
-        # print("ODOM real")
-        # print(pose_x_test,pose_y_test,pose_theta_test)
         prev_left_position = position_left
         prev_right_position = position_right
         reset_tracker +=1
@@ -374,12 +363,6 @@ def get_distance_helper(point1,point2):
 
 
 def get_nearest_vertex(node_list, q_point):
-    '''
-    @param node_list: List of Node objects
-    @param q_point: n-dimensional array representing a point
-    @return Node in node_list with closest node.point to query q_point
-    '''
-    # TODO: Your Code Here
     closest_vertex = None
     for node in node_list:
         if closest_vertex==None:
@@ -393,16 +376,8 @@ def get_nearest_vertex(node_list, q_point):
 
 
 def steer(from_point, to_point, delta_q):
-    '''
-    @param from_point: n-Dimensional array (point) where the path to "to_point" is originating from (e.g., [1.,2.])
-    @param to_point: n-Dimensional array (point) indicating destination (e.g., [0., 0.])
-    @param delta_q: Max path-length to cover, possibly resulting in changes to "to_point" (e.g., 0.2)
-    @returns path: list of points leading from "from_point" to "to_point" (inclusive of endpoints)  (e.g., [ [1.,2.], [1., 1.], [0., 0.] ])
-    '''
-
     path = []
 
-    # TODO: Figure out if you can use "to_point" as-is, or if you need to move it so that it's only delta_q distance away
     distance = get_distance_helper(from_point,to_point)
     if(distance > delta_q):
         direction = (to_point-from_point)/distance
@@ -452,14 +427,17 @@ def rrt_star(convolved_map, state_is_valid, starting_point, goal_point, k, delta
     cost_list.update({tuple(first.point): 0})
     rad = delta_q * 1.5
     for i in range(1, k):
+        #random chance that node is goal point
         if goal_point is not None and random.random() < 0.05:
             q_rand = goal_point
         else:
-            q_rand = get_random_valid_vertex(state_is_valid, convolved_map)
+            q_rand = get_random_valid_vertex(state_is_valid, convolved_map) #getting point
         q_nearest = get_nearest_vertex(node_list, q_rand)
+        #get path from random node to nearest node
         path_rand_nearest = steer(q_nearest.point, q_rand, delta_q)
         q_new = path_rand_nearest[-1]
         valid = True
+        #check validity of path
         for point in path_rand_nearest:
             if state_is_valid(point, convolved_map) == False:
                 valid = False
