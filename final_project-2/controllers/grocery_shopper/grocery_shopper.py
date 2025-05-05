@@ -167,8 +167,10 @@ lidar_offsets = np.linspace(-LIDAR_ANGLE_RANGE/2., +LIDAR_ANGLE_RANGE/2., LIDAR_
 
 wait_timer = 0
 def stalled_for(timesteps):
+    # Stall the main loop for a set amount of timesteps
     global wait_timer
     if wait_timer > timesteps:
+        # Once enough time has stalled, reset and return True
         wait_timer = 0
         return True
     else:
@@ -184,12 +186,17 @@ def filter(waypoints, min_distance):
             filtered.append(waypoints[i])
     return filtered
 
+####
+# Inverse Kinematics Helper Functions
+####
 
 def position_error(current_x, current_y, goal_x, goal_y):
+    # Distance between current position and goal
     return math.sqrt((goal_x - current_x)**2 + (goal_y - current_y)**2)
 
 
 def bearing_error(current_x, current_y, current_theta, goal_x, goal_y):
+    # Direction from current position to goal
     y = goal_y - current_y
     x = goal_x - current_x
     alpha = math.atan2(y, x)
@@ -199,11 +206,12 @@ def bearing_error(current_x, current_y, current_theta, goal_x, goal_y):
 
 
 def heading_error(current_theta, goal_theta):
+    # Angle difference between current theta and goal theta
     eta = goal_theta - current_theta
     eta = (eta + math.pi) % (2 * math.pi) - math.pi
     return eta + math.pi/2
 
-
+# Inverse Kinematics Controller
 def ik_controller(vL, vR, x_i, y_i, pose_x, pose_y, pose_theta, waypoints, index):
     # print(pose_x, pose_y, pose_theta)
 
@@ -217,16 +225,19 @@ def ik_controller(vL, vR, x_i, y_i, pose_x, pose_y, pose_theta, waypoints, index
     # STEP 2: Controller
     velocity = 0.09 * rho
     angular = 0.06 * alpha + 0.03 * eta
+    # Check if we are close to the goal
     if rho < 0.2:
         x_i = waypoints[index][0]
         y_i = waypoints[index][1]
         index += 1
     else:
+        # Set wheel speeds
         vL = (velocity - (angular * AXLE_LENGTH * 0.5)) / (0.02)
         vR = (velocity + (angular * AXLE_LENGTH * 0.5)) / (0.02)
         lsign = 1 if vL > 0 else -1
         rsign = 1 if vR > 0 else -1
         ratio = abs(vL / vR)
+        # Limit speeds
         if abs(vL) > MAX_SPEED or abs(vR) > MAX_SPEED:
             if ratio > 1:
                 vL = MAX_SPEED * lsign
@@ -235,6 +246,7 @@ def ik_controller(vL, vR, x_i, y_i, pose_x, pose_y, pose_theta, waypoints, index
                 vL = MAX_SPEED * ratio * lsign
                 vR = MAX_SPEED * rsign
         if abs(abs(vL / vR) - ratio) > 1e-10: exit()
+        # Turn sharp
         if alpha < -0.09:
             vL = (2)
             vR = (-2)
@@ -242,6 +254,7 @@ def ik_controller(vL, vR, x_i, y_i, pose_x, pose_y, pose_theta, waypoints, index
             vL = (-2)
             vR = (2)
 
+    # Adjust wheel speed range
     if vL != 2 and vL != -2: vL = (vL / MAX_SPEED) * 2
     if vR != 2 and vR != -2: vR = (vR / MAX_SPEED) * 2
 
@@ -249,30 +262,35 @@ def ik_controller(vL, vR, x_i, y_i, pose_x, pose_y, pose_theta, waypoints, index
     return vL, vR, x_i, y_i, index
 
 
+# Get pose from gps and compass
 def get_pose(gps, compass):
     n = compass.getValues()
     x = gps.getValues()[0]-0.2*n[1] # Adjust pose for difference between GPS and true pose
-    y = gps.getValues()[1]-0.2*n[0] # Adjust pose for difference between GPS and true pose
+    y = gps.getValues()[1]-0.2*n[0] 
 
     theta = math.atan2(n[0], n[1])
     return x,y,theta
 
 reset_tracker = 0
+# Calculate odometry using change in wheel position
 def odometry():
     global vL, vR, pose_x, pose_y, pose_theta, prev_left_position, prev_right_position, left_wheel_sensor, right_wheel_sensor, gps, compass, reset_tracker
-    radius = .0982
-    dt = timestep/1000
+    radius = .0982 #wheel radius
 
+    #odometry
     if reset_tracker < 32:
         position_left = left_wheel_sensor.getValue()
         position_right = right_wheel_sensor.getValue()
 
+        #change in wheel positions from previous timestep to now
         change_in_left_wheel = (position_left - prev_left_position)
         change_in_right_wheel = (position_right - prev_right_position)
 
+        #linear distance traveled by each wheel
         dist_left = change_in_left_wheel * radius
         dist_right = change_in_right_wheel * radius
 
+        #distance traveled by both wheels and theta
         dist = (dist_right + dist_left) * 0.5
         theta = (dist_right - dist_left) / AXLE_LENGTH
 
@@ -282,9 +300,11 @@ def odometry():
         pose_theta += theta
         pose_theta = (pose_theta + math.pi) % (2 * math.pi) - math.pi
 
+        #current wheel positions become prev for next loop
         prev_left_position = position_left
         prev_right_position = position_right
         reset_tracker +=1
+    #correction with gps every 32 timesteps
     else:
         pose_x, pose_y, pose_theta = get_pose(gps,compass)
         reset_tracker = 0
@@ -295,7 +315,7 @@ def to_pixels_bad(x, y):
    return int((x + 15) * SCALE), int((y + 8.05) * SCALE)
    # return int((x + map_size[0]/2) * SCALE), int((y + map_size[1]/2 * SCALE))
 
-
+# Convert from world coords to pixels
 def to_pixels(x,y):
     x = int((x + map_size[0]/2) / map_size[0] * HEIGHT)
     y = int((y + map_size[1]/2) / map_size[1] * WIDTH + 10)
@@ -305,6 +325,7 @@ def from_pixels_bad(x, y):
     return x / SCALE -15, y / SCALE - 8.05
     # return x / SCALE - map_size[0]/2, y / SCALE - map_size[1]/2
 
+# Convert from pixels to world coords
 def from_pixels(x, y):
     x = (x / HEIGHT) * map_size[0] - map_size[0] / 2
     y = (y / WIDTH) * map_size[1] - map_size[1] / 2
@@ -354,6 +375,9 @@ def line_algo(x0, y0, x1, y1): #bresenham's line algorithm
             err += dx
             y0 += s_inc
 
+#####
+# RRT Star Helper Functions
+#####
 class Node:
     def __init__(self, pt, parent=None):
         self.point = pt  # n-Dimensional point
@@ -364,14 +388,9 @@ class Node:
 def get_distance_helper(point1,point2):
     return np.linalg.norm(np.array(point1) - np.array(point2))
 
-
+#returns node from node_list that is closest to the target node
 def get_nearest_vertex(node_list, q_point):
-    '''
-    @param node_list: List of Node objects
-    @param q_point: n-dimensional array representing a point
-    @return Node in node_list with closest node.point to query q_point
-    '''
-    # TODO: Your Code Here
+    #loop through list and find closest node
     closest_vertex = None
     for node in node_list:
         if closest_vertex==None:
@@ -385,17 +404,10 @@ def get_nearest_vertex(node_list, q_point):
 
 
 def steer(from_point, to_point, delta_q):
-    '''
-    @param from_point: n-Dimensional array (point) where the path to "to_point" is originating from (e.g., [1.,2.])
-    @param to_point: n-Dimensional array (point) indicating destination (e.g., [0., 0.])
-    @param delta_q: Max path-length to cover, possibly resulting in changes to "to_point" (e.g., 0.2)
-    @returns path: list of points leading from "from_point" to "to_point" (inclusive of endpoints)  (e.g., [ [1.,2.], [1., 1.], [0., 0.] ])
-    '''
-
     path = []
-
-    # TODO: Figure out if you can use "to_point" as-is, or if you need to move it so that it's only delta_q distance away
+    #get distance between points and see if it is in range
     distance = get_distance_helper(from_point,to_point)
+    #if distance is too big get a new point along the line
     if(distance > delta_q):
         direction = (to_point-from_point)/distance
         new_to_point = delta_q*direction+from_point
@@ -406,18 +418,19 @@ def steer(from_point, to_point, delta_q):
     # Convert to list of tuples of ints
     return [np.array((int(p[0]), int(p[1]))) for p in line]
 
-
+#generate random new node
 def get_random_valid_vertex(state_valid, convolved_map):
     vertex = None
     while vertex is None: # Get starting vertex
         random_x = np.random.randint(0,WIDTH)
         random_y = np.random.randint(0,HEIGHT)
         pt = np.array((random_x,random_y))
+        #check if point is not marked as a 1 on the map
         if state_valid(pt, convolved_map):
             vertex = pt
     return vertex
 
-
+#get list of nodes near a point
 def near(node_list,q_new,r):
     near_list = []
     for node in node_list:
@@ -426,6 +439,7 @@ def near(node_list,q_new,r):
             near_list.append(node)
     return near_list
 
+#check if the given point is free or is in the way of an obstacle 
 def state_is_valid(pt,convolved_map):
     x = int(pt[0])
     y = int(pt[1])
@@ -444,27 +458,34 @@ def rrt_star(convolved_map, state_is_valid, starting_point, goal_point, k, delta
     cost_list.update({tuple(first.point): 0})
     rad = delta_q * 1.5
     for i in range(1, k):
+        #condition to randomly pick the new node to be the goal_point occasionally
         if goal_point is not None and random.random() < 0.05:
             q_rand = goal_point
         else:
-            q_rand = get_random_valid_vertex(state_is_valid, convolved_map)
+            q_rand = get_random_valid_vertex(state_is_valid, convolved_map) #get new node
         q_nearest = get_nearest_vertex(node_list, q_rand)
-        path_rand_nearest = steer(q_nearest.point, q_rand, delta_q)
-        q_new = path_rand_nearest[-1]
+        path_rand_nearest = steer(q_nearest.point, q_rand, delta_q) #get the path between nodes
+        q_new = path_rand_nearest[-1] #in case the new node was replaced by a closer node we set q_new to the last node in the line
         valid = True
+        #validity check
         for point in path_rand_nearest:
             if state_is_valid(point, convolved_map) == False:
                 valid = False
         if valid:
+            #create new node
             new_node = Node(q_new, q_nearest)
             new_node.path_from_parent = path_rand_nearest
             node_list.append(new_node)
+            #calculate cost of node
             node_cost = cost_list[tuple(new_node.parent.point)] + get_distance_helper(new_node.point,
                                                                                       new_node.parent.point)
             cost_list.update({tuple(new_node.point): node_cost})
-            q_near_list = near(node_list, new_node.point, rad)
+            q_near_list = near(node_list, new_node.point, rad) # find neighbors for rewiring
+
+            #check for best parent node
             q_min = q_nearest
             c_min = cost_list.get(tuple(q_nearest.point)) + get_distance_helper(q_nearest.point, new_node.point)
+
             for node in q_near_list:
                 near_node_cost = cost_list[tuple(node.point)] + get_distance_helper(node.point, new_node.point)
                 if (near_node_cost < c_min):
@@ -476,9 +497,13 @@ def rrt_star(convolved_map, state_is_valid, starting_point, goal_point, k, delta
                     if (path_valid):
                         q_min = node
                         c_min = near_node_cost
+
+            # reassign best parent and update cost   
             new_node.parent = q_min
             new_node.path_from_parent = np.linspace(new_node.parent.point, new_node.point, num=10)
             cost_list[tuple(new_node.point)] = c_min
+
+            #rewire neighbors
             for node in q_near_list:
                 c_near = cost_list[tuple(node.point)]
                 c_new = cost_list[(tuple(new_node.point))] + get_distance_helper(node.point, new_node.point)
@@ -493,6 +518,7 @@ def rrt_star(convolved_map, state_is_valid, starting_point, goal_point, k, delta
                         node.path_from_parent = np.linspace(new_node.point, node.point, num=10)
                         cost_list[tuple(node.point)] = c_new
 
+            #found goal
             if (goal_point is not None):
                 distance_from_goal = get_distance_helper(new_node.point, goal_point)
                 if (distance_from_goal < 1e-5):
@@ -504,7 +530,7 @@ def rrt_star(convolved_map, state_is_valid, starting_point, goal_point, k, delta
     print(f"World: {from_pixels(starting_point)}, {from_pixels(goal_point)}")
     return node_list
 
-
+#For printing RRT* Map
 def visualize_2D_graph(convolved_map, nodes, goal_point=None, filename=None):
         fig = plt.figure()
         plt.xlim(0,WIDTH)
@@ -541,6 +567,7 @@ def visualize_2D_graph(convolved_map, nodes, goal_point=None, filename=None):
             fig.savefig(filename)
         else:
             plt.show()
+
 # ------------------------------------------------------------------
 # Joint Helper Functions
 # ------------------------------------------------------------------
@@ -582,7 +609,9 @@ def moveArmToTarget(ikResults):
 
 
 def calculateIk(target_position,  orient=True, orientation_mode="Y", target_orientation=[0,0,-0.5]):
+    '''Calculate inverse kinematics of robot arm given end effector pose in robot coordinates'''
     initial_guess = []
+    # Set all links to be within their bounds
     for i, link in enumerate(my_chain.links):
         if my_chain.active_links_mask[i]:
             lower, upper = link.bounds
@@ -592,11 +621,13 @@ def calculateIk(target_position,  orient=True, orientation_mode="Y", target_orie
                 initial_guess.append(0.0)
         else:
             if link.name == 'torso_lift_joint':
+                # Set torso lift joint to constant height
                 initial_guess.append(0.2)
                 # print(f"Setting {link.name}")
             else:
                 initial_guess.append(0.0)
     initial_guess = np.array(initial_guess)
+    # Calculate IK
     ik_result = my_chain.inverse_kinematics(
         target_position=np.array(target_position),
         target_orientation=target_orientation,
@@ -657,6 +688,7 @@ def reachArm(target, previous_target, ikResults, cutoff=0.00005):
     return [False, ikTargetCopy, ikResults]
 
 
+# Close the robot gripper
 def closeGrip():
     robot.getDevice("gripper_right_finger_joint").setPosition(0.0)
     robot.getDevice("gripper_left_finger_joint").setPosition(0.0)
@@ -673,7 +705,7 @@ def closeGrip():
     # else:
     #     return True
 
-
+# Open the robot gripper
 def openGrip():
     robot.getDevice("gripper_right_finger_joint").setPosition(0.045)
     robot.getDevice("gripper_left_finger_joint").setPosition(0.045)
@@ -688,7 +720,7 @@ def openGrip():
 
 
 
-#------ RRT Star Helper --------#
+#---^^^--- RRT Star Helper ---^^^---#
 
 if MODE == "planner":
     # start_w = (-7.97232, -4.84369) # (Pose_X, Pose_Y) in meters CHANGE
@@ -776,8 +808,9 @@ if MODE == "planner":
     plt.show()
     visualize_2D_graph(convolved_map,waypoints_all,end,"test2.png")
 # ------------------------------------------------------------------
-# Helper Functions
 
+
+# Path through grocery store to follow
 aisle_path = [(-4.83, 5.82),(3.41, 5.82),(13.15, 5.82),(13.15,2.18),(3.41,2.18),(-4.83,2.18),(-4.83,-1.82),(3.41,-1.82),(13.15,-1.82),(13.15,-5.91),(3.41,-5.91),(-4.83,-5.91)]
 # aisle_path_px = []
 # for pos in aisle_path:
@@ -787,41 +820,43 @@ aisle_path = [(-4.83, 5.82),(3.41, 5.82),(13.15, 5.82),(13.15,2.18),(3.41,2.18),
 y_i = 0
 x_i = -5
 
-state = 0 # use this to iterate through your path
-aisle_state = -1
-current_path = []
-ARM_STATE = 0
+state = 0 # state in the current path
+aisle_state = -1 # state in the aisle path
+current_path = [] # current path between points on the aisle path
+ARM_STATE = 0 # Arm controller state machine
 
-arm_path = []
-arm_index = 0
+arm_path = [] # Path for arm to follow
+arm_index = 0 # Index along the arm_path
 
-TASK = "follow_aisle"
-detection_timer = 0
-timesteps_without_detection = 0
-WALL_MODE = "not_done"
-cube_bounds = None
+TASK = "follow_aisle" # Current overall task
+detection_timer = 0 # Frame counter between calling ML cube detection
+timesteps_without_detection = 0 # Timesteps since last cube detection
+WALL_MODE = "not_done" # Wall following mode
+cube_bounds = None # Bounds of detected cube
 
-UPPER_SHELF = 1.12
-LOWER_SHELF = 0.7
-min_lidar = 10
+UPPER_SHELF = 1.12 # Upper shelf height
+LOWER_SHELF = 0.7 # Lower shelf height
+min_lidar = 10 # Min lidar value
 
 cmap = np.load("convolved_map.npy")
 # print(f"shape: {cmap.shape}")
 # plt.imshow(cmap)
 # plt.show()
 
-armTop = (0,0,2)
+armTop = (0,0,2) # Position above head
 armTopIk = calculateIk(armTop)
 # moveArmToTarget(armTop)
 
 # Main Loop
 while robot.step(timestep) != -1 and MODE != 'planner':
     # print(f"WALL MODE: {WALL_MODE}, Wait Timer: {wait_timer}")
-    pose_x, pose_y, pose_theta = odometry()
+    pose_x, pose_y, pose_theta = odometry() # Get pose from odometry
     if np.isnan(pose_x) or np.isnan(pose_y) or np.isnan(pose_theta):
+        # Odometry values are occasionally initialized to NaN
         pose_x, pose_y, pose_theta = -5,0,0
         print("NaN pose at first iteration!")
         continue
+
     lidar_values = np.array(lidar.getRangeImage())
 
     if MODE == 'map':
@@ -884,13 +919,16 @@ while robot.step(timestep) != -1 and MODE != 'planner':
         # pose_theta = math.atan2(n[0], n[1])
         # TODO: remove ^^^^^^^^^
         # print(pose_x, pose_y, pose_theta)
+
+        # Following wall and cube just went out of frame
         if WALL_MODE == "forward_left" or WALL_MODE == "forward_right":
             # Continue forward for x timesteps
             if WALL_MODE == "forward_left":
                 vL, vR = 1.8, 2
             else:
                 vL, vR = 2, 1.8
-            print("Calling stalled_for")
+            # print("Calling stalled_for")
+            # Move forward some distance based on distance to wall on the side
             if stalled_for(100*min_lidar):
                 if WALL_MODE == "forward_left":
                     WALL_MODE = "turn_left"
@@ -901,16 +939,20 @@ while robot.step(timestep) != -1 and MODE != 'planner':
             robot_parts[MOTOR_RIGHT].setVelocity(vR)
             continue
         elif WALL_MODE == "turn_left":
+            # After moving forward, turn left
             vL = -2
             vR = 2
+            # Stall for length of time to turn 90 degrees
             if stalled_for(100):
                 WALL_MODE = "done"
             robot_parts[MOTOR_LEFT].setVelocity(vL)
             robot_parts[MOTOR_RIGHT].setVelocity(vR)
             continue
         elif WALL_MODE == "turn_right":
+            # After moving forward, turn right
             vL = 2
             vR = -2
+            # Stall for length of time to turn 90 degrees
             if stalled_for(100):
                 WALL_MODE = "done"
             robot_parts[MOTOR_LEFT].setVelocity(vL)
