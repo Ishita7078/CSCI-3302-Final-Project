@@ -36,9 +36,7 @@ lidar_offsets = np.linspace(-LIDAR_ANGLE_RANGE / 2., LIDAR_ANGLE_RANGE / 2., LID
 # lidar_offsets = lidar_offsets[::-1]
 
 # create the Robot instance.
-robot = Supervisor()
-# marker = robot.getFromDef("marker").getField("translation") # TODO: remove
-# trans_field = robot.getSelf().getField("translation") # TODO: remove
+robot = Robot()
 
 # get the time step of the current world.
 timestep = int(robot.getBasicTimeStep())
@@ -153,6 +151,7 @@ for link in my_chain.links:
         motors.append(motor)
 
 
+# Pixel Map Dimension
 HEIGHT = 914
 WIDTH = 494
 SCALE = 30
@@ -311,19 +310,11 @@ def odometry():
     return pose_x, pose_y, pose_theta
 
 
-def to_pixels_bad(x, y):
-   return int((x + 15) * SCALE), int((y + 8.05) * SCALE)
-   # return int((x + map_size[0]/2) * SCALE), int((y + map_size[1]/2 * SCALE))
-
 # Convert from world coords to pixels
 def to_pixels(x,y):
     x = int((x + map_size[0]/2) / map_size[0] * HEIGHT)
     y = int((y + map_size[1]/2) / map_size[1] * WIDTH + 10)
     return x,y
-
-def from_pixels_bad(x, y):
-    return x / SCALE -15, y / SCALE - 8.05
-    # return x / SCALE - map_size[0]/2, y / SCALE - map_size[1]/2
 
 # Convert from pixels to world coords
 def from_pixels(x, y):
@@ -477,8 +468,7 @@ def rrt_star(convolved_map, state_is_valid, starting_point, goal_point, k, delta
             new_node.path_from_parent = path_rand_nearest
             node_list.append(new_node)
             #calculate cost of node
-            node_cost = cost_list[tuple(new_node.parent.point)] + get_distance_helper(new_node.point,
-                                                                                      new_node.parent.point)
+            node_cost = cost_list[tuple(new_node.parent.point)] + get_distance_helper(new_node.point, new_node.parent.point)
             cost_list.update({tuple(new_node.point): node_cost})
             q_near_list = near(node_list, new_node.point, rad) # find neighbors for rewiring
 
@@ -571,31 +561,6 @@ def visualize_2D_graph(convolved_map, nodes, goal_point=None, filename=None):
 # ------------------------------------------------------------------
 # Joint Helper Functions
 # ------------------------------------------------------------------
-def rotate_y(x, y, z, theta):
-    new_x = x * np.cos(theta) + y * np.sin(theta)
-    new_z = z
-    new_y = y * -np.sin(theta) + x * np.cos(theta)
-    return [-new_x, new_y, new_z]
-
-def checkArmAtPosition(ikResults, cutoff=0.00005):
-    # '''Checks if arm at position, given ikResults'''
-
-    # Get the initial position of the motors
-    initial_position = [0, 0, 0, 0] + [m.getPositionSensor().getValue() for m in motors] + [0, 0, 0, 0]
-
-    # Calculate the arm
-    arm_error = 0
-    for item in builtins.range(14):
-        arm_error += (initial_position[item] - ikResults[item]) ** 2
-    arm_error = math.sqrt(arm_error)
-
-    if arm_error < cutoff:
-        if vrb:
-            print("Arm at position.")
-        return True
-    return False
-
-
 def moveArmToTarget(ikResults):
     # '''Moves arm given ikResults'''
     # Set the robot motors
@@ -637,107 +602,24 @@ def calculateIk(target_position,  orient=True, orientation_mode="Y", target_orie
     return ik_result
 
 
-
-def getTargetFromObject(recognized_objects):
-    # ''' Gets a target vector from a list of recognized objects '''
-
-    # Get the first valid target
-    target = recognized_objects[0].get_position()
-
-    # Convert camera coordinates to IK/Robot coordinates
-    # offset_target = [-(target[2])+0.22, -target[0]+0.08, (target[1])+0.97+0.2]
-    offset_target = [-(target[2]) + 0.22, -target[0] + 0.06, (target[1]) + 0.97 + 0.2]
-
-    return offset_target
-
-
-def reachArm(target, previous_target, ikResults, cutoff=0.00005):
-    # '''
-    # This code is used to reach the arm over an object and pick it up.
-    # '''
-
-    # Calculate the error using the ikTarget
-    error = 0
-    ikTargetCopy = previous_target
-
-    # Make sure ikTarget is defined
-    if previous_target is None:
-        error = 100
-    else:
-        for item in builtins.range(3):
-            error += (target[item] - previous_target[item]) ** 2
-        error = math.sqrt(error)
-
-    # If error greater than margin
-    if error > 0.05:
-        print("Recalculating IK, error too high {}...".format(error))
-        ikResults = calculateIk(target)
-        ikTargetCopy = target
-        moveArmToTarget(ikResults)
-
-    # Exit Condition
-    if checkArmAtPosition(ikResults, cutoff=cutoff):
-        if vrb:
-            print("NOW SWIPING")
-        return [True, ikTargetCopy, ikResults]
-    else:
-        if vrb:
-            print("ARM NOT AT POSITION")
-
-    # Return ikResults
-    return [False, ikTargetCopy, ikResults]
-
-
 # Close the robot gripper
 def closeGrip():
     robot.getDevice("gripper_right_finger_joint").setPosition(0.0)
     robot.getDevice("gripper_left_finger_joint").setPosition(0.0)
 
-    # r_error = abs(robot.getDevice("gripper_right_finger_joint").getPositionSensor().getValue() - 0.01)
-    # l_error = abs(robot.getDevice("gripper_left_finger_joint").getPositionSensor().getValue() - 0.01)
-
-    # print("ERRORS")
-    # print(r_error)
-    # print(l_error)
-
-    # if r_error+l_error > 0.0001:
-    #     return False
-    # else:
-    #     return True
 
 # Open the robot gripper
 def openGrip():
     robot.getDevice("gripper_right_finger_joint").setPosition(0.045)
     robot.getDevice("gripper_left_finger_joint").setPosition(0.045)
 
-    # r_error = abs(robot.getDevice("gripper_right_finger_joint").getPositionSensor().getValue() - 0.045)
-    # l_error = abs(robot.getDevice("gripper_left_finger_joint").getPositionSensor().getValue() - 0.045)
 
-    # if r_error+l_error > 0.0001:
-    #     return False
-    # else:
-    #     return True
-
-
-
-#---^^^--- RRT Star Helper ---^^^---#
-
+# Planner mode to create convolved map and test RRT*
 if MODE == "planner":
-    # start_w = (-7.97232, -4.84369) # (Pose_X, Pose_Y) in meters CHANGE
-    # end_w = (-2.20815, -8.84167) # (Pose_X, Pose_Y) in meters
-
-    # # Convert the start_w and end_w from the webots coordinate frame into the map frame
-
-    # def world_to_map(coords):
-    #     return (abs(int(coords[0]*30)), abs(int(coords[1]*30)))
-
-    # start = world_to_map(start_w) # (x, y) in 360x360 map
-    # end = world_to_map(end_w) # (x, y) in 360x360 map
-    # print(start, end)
-
-    #declare start and end and load map
+    #declare start and end
     start = np.array((20,20))
     end = np.array((312,807))
+    # Load map
     map = np.load("map.npy")
     map = map==3
 
@@ -809,22 +691,17 @@ if MODE == "planner":
     visualize_2D_graph(convolved_map,waypoints_all,end,"test2.png")
 # ------------------------------------------------------------------
 
-
-# Path through grocery store to follow
-aisle_path = [(-4.83, 5.82),(3.41, 5.82),(13.15, 5.82),(13.15,2.18),(3.41,2.18),(-4.83,2.18),(-4.83,-1.82),(3.41,-1.82),(13.15,-1.82),(13.15,-5.91),(3.41,-5.91),(-4.83,-5.91)]
-# aisle_path_px = []
-# for pos in aisle_path:
-#     aisle_path_px.append(to_pixels(pos[0],pos[1]))
-
 # Tiago Starting position
 y_i = 0
 x_i = -5
 
-state = 0 # state in the current path
+# Path through grocery store to follow
+aisle_path = [(-4.83, 5.82),(3.41, 5.82),(13.15, 5.82),(13.15,2.18),(3.41,2.18),(-4.83,2.18),(-4.83,-1.82),(3.41,-1.82),(13.15,-1.82),(13.15,-5.91),(3.41,-5.91),(-4.83,-5.91)]
 aisle_state = -1 # state in the aisle path
 current_path = [] # current path between points on the aisle path
-ARM_STATE = 0 # Arm controller state machine
+state = 0 # state in the current path
 
+ARM_STATE = 0 # Arm controller state machine
 arm_path = [] # Path for arm to follow
 arm_index = 0 # Index along the arm_path
 
@@ -843,13 +720,11 @@ cmap = np.load("convolved_map.npy")
 # plt.imshow(cmap)
 # plt.show()
 
-armTop = (0,0,2) # Position above head
+armTop = (0,0,2) # Position arm above head
 armTopIk = calculateIk(armTop)
-# moveArmToTarget(armTop)
 
 # Main Loop
 while robot.step(timestep) != -1 and MODE != 'planner':
-    # print(f"WALL MODE: {WALL_MODE}, Wait Timer: {wait_timer}")
     pose_x, pose_y, pose_theta = odometry() # Get pose from odometry
     if np.isnan(pose_x) or np.isnan(pose_y) or np.isnan(pose_theta):
         # Odometry values are occasionally initialized to NaN
@@ -857,8 +732,10 @@ while robot.step(timestep) != -1 and MODE != 'planner':
         print("NaN pose at first iteration!")
         continue
 
+    # Get lidar values
     lidar_values = np.array(lidar.getRangeImage())
 
+    # Mapping mode
     if MODE == 'map':
 
         # print(pose_x, pose_y, pose_theta)
@@ -908,18 +785,10 @@ while robot.step(timestep) != -1 and MODE != 'planner':
         file_path = os.path.join(os.getcwd(), "occupancy_grid.npy")
         np.save(file_path, occupancy_grid)
         print(f"Occupancy grid saved to {file_path}")
+
+    # Autonomous navigation mode
+    # Follows aisle path through grocery store, and picks up each cube as it is encountered
     elif MODE == 'navigation':
-        # if current_path and len(current_path) > state:
-        #     marker.setSFVec3f([current_path[state][0], current_path[state][1], 2.4]) # TODO: remove
-
-        # values = trans_field.getSFVec3f()
-        # pose_x = values[0]
-        # pose_y = values[1]
-        # n = compass.getValues()
-        # pose_theta = math.atan2(n[0], n[1])
-        # TODO: remove ^^^^^^^^^
-        # print(pose_x, pose_y, pose_theta)
-
         # Following wall and cube just went out of frame
         if WALL_MODE == "forward_left" or WALL_MODE == "forward_right":
             # Continue forward for x timesteps
@@ -927,7 +796,6 @@ while robot.step(timestep) != -1 and MODE != 'planner':
                 vL, vR = 1.8, 2
             else:
                 vL, vR = 2, 1.8
-            # print("Calling stalled_for")
             # Move forward some distance based on distance to wall on the side
             if stalled_for(100*min_lidar):
                 if WALL_MODE == "forward_left":
@@ -960,6 +828,7 @@ while robot.step(timestep) != -1 and MODE != 'planner':
             continue
 
         detections = []
+        # Run ML cube detection only when needed
         if TASK != "grab_cube" and WALL_MODE not in ["forward_left", "forward_right", "turn_left", "turn_right"] and abs(pose_y - aisle_path[aisle_state][1]) < 1.5:
             if detection_timer > 10 or TASK == "go_to_cube": # Only check for detections every 10 timesteps, laggy
                 detection_timer = 0
@@ -973,6 +842,7 @@ while robot.step(timestep) != -1 and MODE != 'planner':
                 class_names = model.names
             else:
                 detection_timer += 1
+        # Filter detections to be of length one
         if len(detections) > 1: detections = [detections[0]]
         filtered_detections = []
         green_count = 0
@@ -982,13 +852,14 @@ while robot.step(timestep) != -1 and MODE != 'planner':
             label = class_names[int(cls)]
             if label == "green":
                 green_count += 1
+            # Only consider large square-ish cubes with a high degree of confidence
             if conf > 0.8 and (((x2-x1) > 4 and (y2-y1) > 4) or TASK == "go_to_cube"): # Confident it is a nearby cube
-
                 if label == "yellow":
                     print(f"[DETECTION] {label} ({conf:.2f}) at [{int(x1)}, {int(y1)}, {int(x2)}, {int(y2)}], W {x2 - x1}, H {y2 - y1}")
                     filtered_detections.append(det)
         detections = filtered_detections
 
+        # Very close cubes get detected as 3+ green cubes, so back up
         if green_count > 3:
             timesteps_without_detection = 0
             print("Too many greens, backing up!")
@@ -997,13 +868,13 @@ while robot.step(timestep) != -1 and MODE != 'planner':
             robot_parts[MOTOR_RIGHT].setVelocity(vR)
             continue
 
+        # If there are no detections and the current task is to follow the aisle
         if detections == [] and TASK == "follow_aisle":
             # task = go to next point in aisle path, no rrt star since just straight lines with no obstacles?
-            # may run face-first into walls after picking up an object
-            # if prev_state != state:
-            # prev_state = state
+
+            # If the end of the path has been reached
             if state < len(current_path):
-                # print(state, current_path)
+                # Use IK controller to go to next waypoint
                 vL, vR, x_i, y_i, state = ik_controller(vL, vR, x_i, y_i, pose_x, pose_y, pose_theta, current_path, state)
             else:
                 # End of current path reached
@@ -1063,9 +934,11 @@ while robot.step(timestep) != -1 and MODE != 'planner':
                 # plt.show()
         else: # detections is not None or TASK == "grab_cube"
             if TASK != "grab_cube":
+                # Move towards the cube using only camera and lidar values
                 TASK = "go_to_cube"
                 center_bin = LIDAR_ANGLE_BINS // 2
                 print(f"Front lidar: {lidar_values[center_bin]}")
+                # Find the largest detected cube
                 largest_det = None
                 largest_det_size = -1
                 for det in detections:
@@ -1074,19 +947,24 @@ while robot.step(timestep) != -1 and MODE != 'planner':
                     if size > largest_det_size:
                         largest_det_size = size
                         largest_det = det
+                # If there is a cube
                 if largest_det is not None:
-                    timesteps_without_detection = 0
+                    timesteps_without_detection = 0 # Reset detection timer
                     x1, y1, x2, y2, _, _ = largest_det
-                    x_offset = (x1+x2)/2 - 120
+
+                    x_offset = (x1+x2)/2 - 120 # Calculate cube offset from center of camera
+                    # Define turn speed magnitude based on how far from the center the cube is
                     turn_speed = x_offset/40
                     turn_speed = max(min(turn_speed,1),-1)
 
+                    # Find minimum lidar value
                     min_lidar_index = 0
                     for i in builtins.range(len(lidar_values)):
                         if lidar_values[i] > 0.6 and lidar_values[i] < min_lidar and i < len(lidar_values):
                             min_lidar = lidar_values[i]
                             min_lidar_index = i
                     print(f"Min Lidar: {min_lidar} at {min_lidar_index}")
+                    # If the minimum lidar value is on one of the sides, follow that wall
                     if (min_lidar_index > 380 or min_lidar_index < 280) and (WALL_MODE == "not_done"):
                         # Wall following
                         if min_lidar < 1.2:
@@ -1094,54 +972,55 @@ while robot.step(timestep) != -1 and MODE != 'planner':
                             theta = math.atan2(n[0], n[1])
                             if min_lidar_index > 380 and x_offset > -10:
                                 # Wall on right
-                                print("following right")
-                                # print(pose_theta)
                                 if math.pi/2 < theta < 3 or -math.pi/2 < theta < -0.15:
-                                    print("turning left within follow right")
+                                    # Spin to face parallel to wall
                                     vL = 0
                                     vR = 2.5
                                 else:
-                                    print("forrrrrrrrrrewarod")
+                                    # Go straight along wall
                                     vL = 2
                                     vR = 2
+                                    # When the cube is at the edge of the screen, stop using camera
                                     if x_offset > 100:
-                                        print("Done following right")
                                         WALL_MODE = "forward_right"
                                 robot_parts[MOTOR_LEFT].setVelocity(vL)
                                 robot_parts[MOTOR_RIGHT].setVelocity(vR)
                                 continue
                             elif min_lidar_index < 280 and x_offset < 10:
                                 # Wall on left
-                                print("following left")
-                                # print(pose_theta)
                                 if 0.3 < theta < math.pi/2 or -math.pi/2 < theta < -0.3:
-                                    print("turn right within follow left")
+                                    # Spin to face parallel to wall
                                     vL = 2.5
                                     vR = 0
                                 else:
+                                    # Go straight along wall
                                     vL = 2
                                     vR = 2
+                                    # When the cube is at the edge of the screen, stop using camera
                                     if x_offset < -100:
-                                        print("Done following left")
                                         WALL_MODE = "forward_left"
                                 robot_parts[MOTOR_LEFT].setVelocity(vL)
                                 robot_parts[MOTOR_RIGHT].setVelocity(vR)
                                 continue
 
+                    # Not following a wall, must be facing perpendicular to it
+
                     if lidar_values[center_bin] < 1.11:
-                        print("backing up")
+                        # Too close to wall
                         vL = -1
                         vR = -1
                     elif 1.11 <= lidar_values[center_bin] <= 1.13 and abs(x_offset) < 3:
+                        # Correct distance from wall and the cube is directly centered
                         # Stop at wall
                         vL = 0
                         vR = 0
                         # Reach for cube
-                        print("reaching")
                         TASK = "grab_cube"
                         cube_bounds = [x1, y1, x2, y2]
                     else:
-                        VMAX = 2
+                        # Turn to face the cube
+                        VMAX = 2 # Maximum wheel motor speed
+                        # Calculate speed based on front lidar distance and turn speed from above
                         speed = max(1, min(VMAX, (lidar_values[center_bin] - 1.13) * 5 + 1))
                         vL = speed * (1+turn_speed)
                         vR = speed * (1-turn_speed)
@@ -1150,10 +1029,11 @@ while robot.step(timestep) != -1 and MODE != 'planner':
                             vL = -abs(vR)
                         elif abs(vR) < 1 and abs(vL) > VMAX/2:
                             vR = -abs(vL)
+                        # Adjust bounds on vL and vR
                         vL = max(min(vL,VMAX),-VMAX)
                         vR = max(min(vR,VMAX),-VMAX)
                         if abs(vL)-1 < 0.15 and abs(vR)-1 < 0.15:
-                            print("Halving wheel speeds")
+                            # If very close, halve the wheel speeds
                             vL /= 2
                             vR /= 2
                         print(vL, vR)
@@ -1161,20 +1041,19 @@ while robot.step(timestep) != -1 and MODE != 'planner':
                     # Continue forward until cube is seen again
                     vL = 2
                     vR = 2
-                    print(f"DDDDDDDDDDDDDDDDDDDDDDDDDetections {detections}, {TASK}, {vL}, {vR}, {timesteps_without_detection}")
                     if timesteps_without_detection > 50:
-                        #TODO: re-run RRT
+                        # If cube hasnt been seen for a while, go back to following aisle path
                         TASK = "follow_aisle"
                         timesteps_without_detection = 0
                     else:
-                        print("EEEEEEEEEEEEEEEEEE")
                         timesteps_without_detection += 1
 
             else: # Grab cube
                 if cube_bounds is None:
                     cube_bounds = [117, 125, 126, 135] # Temp value for testing arm movement
                     print("Error: reaching for undefined cube!")
-                if ARM_STATE == 0:
+                # Go through arm state machine, moving the arm to the cube, grabbing it, and putting it in the basket
+                if ARM_STATE == 0: # Start State
                     moveArmToTarget(armTopIk)
                     ARM_STATE = "go_to_shelf"
                     wait_timer = 0
@@ -1182,17 +1061,18 @@ while robot.step(timestep) != -1 and MODE != 'planner':
                     if stalled_for(150):
                         x1, y1, x2, y2 = cube_bounds
                         x_offset = (x1 + x2) / 2 - 120
+                        # Calculate which shelf the cube is on using camera height
                         shelf = UPPER_SHELF
                         if (y1 + y2) / 2 > 90:
                             shelf = LOWER_SHELF
-                        print(f"SHSSSSHELFFFF: {shelf}")
                         shelfIk = calculateIk((0.4, 0, shelf))
                         moveArmToTarget(shelfIk)
                         openGrip()
                         ARM_STATE = "follow_arm_path"
-                        # Reach forward distance based on object size and compass angle? size is bigger if looking at corner than face and upper vs lower shelf
+                        # Calculate forward and side distances
                         FORWARD_DISTANCE = 0.68 if shelf == LOWER_SHELF else 0.75
                         SIDE_OFFSET = 0.01*x_offset-0.03
+                        # Generate path to object
                         arm_linspace = np.linspace(np.array([0.4, SIDE_OFFSET]), np.array([FORWARD_DISTANCE, SIDE_OFFSET]), 5)
                         for point in arm_linspace:
                             arm_path.append((point[0], point[1], shelf))
@@ -1202,9 +1082,7 @@ while robot.step(timestep) != -1 and MODE != 'planner':
                             ARM_STATE = "lower_arm"
                             arm_index = 0
                         else:
-                            print(arm_path[arm_index])
                             armForwardIk = calculateIk(arm_path[arm_index])
-                            print("armForwardIk")
                             moveArmToTarget(armForwardIk)
                             arm_index += 1
                 elif ARM_STATE == "lower_arm":
@@ -1232,12 +1110,6 @@ while robot.step(timestep) != -1 and MODE != 'planner':
                         print("wiggleIk")
                         moveArmToTarget(wiggleIk)
                         ARM_STATE = "extract_from_shelf"
-                # elif ARM_STATE == "raise_arm":
-                #     if stalled_for(100):
-                #         raiseIk = calculateIk(arm_path[-1])
-                #         print("raiseIk")
-                #         moveArmToTarget(raiseIk)
-                #         ARM_STATE = "extract_from_shelf"
                 elif ARM_STATE == "extract_from_shelf":
                     if stalled_for(100):
                         vL, vR = -3,-3
@@ -1258,26 +1130,6 @@ while robot.step(timestep) != -1 and MODE != 'planner':
                     TASK = "follow_aisle"
                     WALL_MODE = "not_done"
                     cube_bounds = None
-                #     if wait_timer > 200:
-                #         armCubeIk = calculateIk((0.7,0,UPPER_SHELF+0.1),target_orientation=np.array([-1, 0.7, 0]),orientation_mode="Z")
-                #         moveArmToTarget(armCubeIk)
-                #         ARM_STATE = 3
-                #     else:
-                #         wait_timer += 1
-
-
-    # if(gripper_status=="open"):
-    #     # Close gripper, note that this takes multiple time steps...
-    #     robot_parts["gripper_left_finger_joint"].setPosition(0)
-    #     robot_parts["gripper_right_finger_joint"].setPosition(0)
-    #     if right_gripper_enc.getValue()<=0.005:
-    #         gripper_status="closed"
-    # else:
-    #     # Open gripper
-    #     robot_parts["gripper_left_finger_joint"].setPosition(0.045)
-    #     robot_parts["gripper_right_finger_joint"].setPosition(0.045)
-    #     if left_gripper_enc.getValue()>=0.044:
-    #         gripper_status="open"
 
         # Actuator commands
         robot_parts[MOTOR_LEFT].setVelocity(vL)
