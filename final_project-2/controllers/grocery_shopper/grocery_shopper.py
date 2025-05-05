@@ -699,7 +699,7 @@ x_i = -5
 aisle_path = [(-4.83, 5.82),(3.41, 5.82),(13.15, 5.82),(13.15,2.18),(3.41,2.18),(-4.83,2.18),(-4.83,-1.82),(3.41,-1.82),(13.15,-1.82),(13.15,-5.91),(3.41,-5.91),(-4.83,-5.91)]
 aisle_state = -1 # state in the aisle path
 current_path = [] # current path between points on the aisle path
-state = 0 # state in the current path
+c_state = 0 # state in the current path
 
 ARM_STATE = 0 # Arm controller state machine
 arm_path = [] # Path for arm to follow
@@ -873,9 +873,9 @@ while robot.step(timestep) != -1 and MODE != 'planner':
             # task = go to next point in aisle path, no rrt star since just straight lines with no obstacles?
 
             # If the end of the path has been reached
-            if state < len(current_path):
+            if c_state < len(current_path):
                 # Use IK controller to go to next waypoint
-                vL, vR, x_i, y_i, state = ik_controller(vL, vR, x_i, y_i, pose_x, pose_y, pose_theta, current_path, state)
+                vL, vR, x_i, y_i, c_state = ik_controller(vL, vR, x_i, y_i, pose_x, pose_y, pose_theta, current_path, c_state)
             else:
                 # End of current path reached
                 vL = 0
