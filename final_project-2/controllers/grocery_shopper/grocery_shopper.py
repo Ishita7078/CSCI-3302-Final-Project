@@ -281,14 +281,7 @@ def odometry():
         prev_right_position = position_right
         reset_tracker +=1
     else:
-        print("RESET")
-        print(" ")
-        print(" ")
-        print(" ")
-        print(" ")
         pose_x, pose_y, pose_theta = get_pose(gps,compass)
-        print("ODOM")
-        print(pose_x,pose_y,pose_theta)
         reset_tracker = 0
     return pose_x, pose_y, pose_theta
 
