@@ -1048,11 +1048,13 @@ while robot.step(timestep) != -1 and MODE != 'planner':
                     if (min_lidar_index > 380 or min_lidar_index < 280) and (WALL_MODE == "not_done"):
                         # Wall following
                         if min_lidar < 1.2:
+                            n = compass.getValues()
+                            theta = math.atan2(n[0], n[1])
                             if min_lidar_index > 380 and x_offset > -10:
                                 # Wall on right
                                 print("following right")
-                                print(pose_theta)
-                                if math.pi/2 < pose_theta < 3 or -math.pi/2 < pose_theta < -0.15:
+                                # print(pose_theta)
+                                if math.pi/2 < theta < 3 or -math.pi/2 < theta < -0.15:
                                     print("turning left within follow right")
                                     vL = 0
                                     vR = 2.5
@@ -1069,8 +1071,8 @@ while robot.step(timestep) != -1 and MODE != 'planner':
                             elif min_lidar_index < 280 and x_offset < 10:
                                 # Wall on left
                                 print("following left")
-                                print(pose_theta)
-                                if 0.3 < pose_theta < math.pi/2 or -math.pi/2 < pose_theta < -0.3:
+                                # print(pose_theta)
+                                if 0.3 < theta < math.pi/2 or -math.pi/2 < theta < -0.3:
                                     print("turn right within follow left")
                                     vL = 2.5
                                     vR = 0
@@ -1148,12 +1150,7 @@ while robot.step(timestep) != -1 and MODE != 'planner':
                         ARM_STATE = "follow_arm_path"
                         # Reach forward distance based on object size and compass angle? size is bigger if looking at corner than face and upper vs lower shelf
                         FORWARD_DISTANCE = 0.68 if shelf == LOWER_SHELF else 0.75
-                        if lidar_values[int(len(lidar_values)/2)-20] < lidar_values[int(len(lidar_values)/2)]:
-                            # turn_offset = 0.01
-                            print("left closer")
-                        elif lidar_values[int(len(lidar_values)/2)+20] < lidar_values[int(len(lidar_values)/2)]:
-                            print("right closer")
-                        SIDE_OFFSET = 0.01*x_offset-0.02
+                        SIDE_OFFSET = 0.01*x_offset-0.03
                         arm_linspace = np.linspace(np.array([0.4, SIDE_OFFSET]), np.array([FORWARD_DISTANCE, SIDE_OFFSET]), 5)
                         for point in arm_linspace:
                             arm_path.append((point[0], point[1], shelf))
